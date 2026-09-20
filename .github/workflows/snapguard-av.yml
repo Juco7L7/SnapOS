@@ -1,0 +1,163 @@
+name: SnapGuard antivirus check
+
+# Proves that SnapGuard really works with ClamAV, in two ways:
+#   official-clamav : the official ClamAV release and the official virus
+#                     signatures, driven by the SnapGuard tools built here.
+#   nixos-vm        : the ClamAV service as SnapOS configures it, in a VM.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "src/snapguard.c"
+      - "src/snapguard-gui.c"
+      - "src/snaphelper.c"
+      - "src/snapguard.c"
+      - "nix/modules/snapos.nix"
+      - "nix/tests/desktop.nix"
+      - ".github/workflows/snapguard-av.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  official-clamav:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SNAP_GUARD_CLAMDB: /usr/local/share/clamav
+      SNAP_GUARD_CLAMD_SOCKET: /tmp/snapos-clamd.sock
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev xvfb
+
+      - name: Download ClamAV from its official repository
+        run: |
+          gh release download --repo Cisco-Talos/clamav --pattern '*.linux.x86_64.deb' --dir clamav
+          ls -l clamav
+          sha256sum clamav/*.deb
+          sudo apt-get install -y ./clamav/*.linux.x86_64.deb
+          clamscan --version
+
+      - name: Download the official virus signatures
+        run: |
+          sudo mkdir -p /usr/local/share/clamav
+          printf 'DatabaseMirror database.clamav.net\nDatabaseDirectory /usr/local/share/clamav\nDatabaseOwner root\n' | sudo tee /usr/local/etc/freshclam.conf
+          for try in 1 2 3; do
+            sudo freshclam && break
+            echo "freshclam attempt $try failed, waiting"
+            sleep 30
+          done
+          ls -l /usr/local/share/clamav
+
+      - name: Build SnapGuard (command line and window)
+        run: make all gui
+
+      - name: SnapGuard finds a virus with the real ClamAV
+        run: |
+          : > "$RUNNER_TEMP/no-signatures.txt"
+          export SNAP_GUARD_SIGS="$RUNNER_TEMP/no-signatures.txt"
+          export SNAP_GUARD_ALLOW="$RUNNER_TEMP/allow.txt"
+          export SNAP_GUARD_QUARANTINE="$RUNNER_TEMP/quarantine"
+          printf '%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > "$RUNNER_TEMP/eicar.com.txt"
+          echo "clean file" > "$RUNNER_TEMP/clean.txt"
+
+          bin/snapguard status
+          bin/snapguard status | grep -q 'protection    : .*ACTIVE'
+
+          # Without the daemon: the stand-alone scanner.
+          set +e
+          out="$(bin/snapguard scan "$RUNNER_TEMP/eicar.com.txt")"; rc=$?
+          set -e
+          echo "$out"
+          test "$rc" -eq 1
+          echo "$out" | grep -qi eicar
+          bin/snapguard scan "$RUNNER_TEMP/clean.txt"
+
+          # SnapGuard puts it in quarantine and does not delete it.
+          bin/snapguard quarantine "$RUNNER_TEMP/eicar.com.txt"
+          test ! -e "$RUNNER_TEMP/eicar.com.txt"
+          bin/snapguard list-quarantine | grep -q eicar
+
+      - name: SnapGuard uses the ClamAV daemon when it is running
+        run: |
+          printf 'LocalSocket /tmp/snapos-clamd.sock\nLocalSocketMode 666\nUser root\nDatabaseDirectory /usr/local/share/clamav\n' | sudo tee /usr/local/etc/clamd.conf
+          sudo /usr/local/sbin/clamd
+          for i in $(seq 1 120); do
+            test -S /tmp/snapos-clamd.sock && break
+            sleep 2
+          done
+          test -S /tmp/snapos-clamd.sock
+          export SNAP_GUARD_SIGS="$RUNNER_TEMP/no-signatures.txt"
+          printf '%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > "$RUNNER_TEMP/eicar2.com.txt"
+          bin/snapguard status | grep -q 'ClamAV daemon : .*running'
+          set +e
+          out="$(bin/snapguard scan "$RUNNER_TEMP/eicar2.com.txt")"; rc=$?
+          set -e
+          echo "$out"
+          test "$rc" -eq 1
+          echo "$out" | grep -qi eicar
+
+      - name: The SnapGuard window opens
+        run: |
+          set +e
+          xvfb-run -a timeout 8 bin/snapguard-gui
+          rc=$?
+          set -e
+          # 124 = still running when the timer stopped it, which is what we want.
+          test "$rc" -eq 124
+
+      - name: SnapHelper walks through its three animations
+        run: |
+          sudo apt-get install -y xdotool
+          export SNAPHELPER_DIR="$PWD/branding" XDG_CONFIG_HOME="$RUNNER_TEMP/helper-cfg"
+          timeout 90 xvfb-run -a bash -c '
+            bin/snaphelper --first-run &
+            pid=$!
+            sleep 4
+            wid=$(xdotool search --name SnapHelper | head -1)
+            xdotool windowfocus "$wid"
+            xdotool key Right; sleep 1
+            xdotool key Right; sleep 1
+            xdotool key Return
+            wait "$pid"
+          '
+          # End was pressed on the last page: the tour is marked as seen
+          test -f "$XDG_CONFIG_HOME/snapos/helper-done"
+
+      - name: SnapHelper opens
+        run: |
+          set +e
+          SNAPHELPER_DIR="$PWD/branding" xvfb-run -a timeout 8 bin/snaphelper
+          rc=$?
+          set -e
+          test "$rc" -eq 124
+
+  nixos-vm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || true
+
+      - name: Install Nix (flakes)
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cache Nix store
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: ClamAV as SnapOS configures it, in a VM
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#checks.x86_64-linux.antivirus.driver -L -o driver
+          mkdir -p av-test-out
+          ./driver/bin/nixos-test-driver --output_directory av-test-out

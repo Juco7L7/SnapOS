@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SnapWeb</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #121212;
+    --fg: #e8e8e8;
+    --muted: #8f8f8f;
+    --field: #1c1c1c;
+    --field-text: #f2f2f2;
+    --border: #333;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f4f1;
+      --fg: #1c1c1c;
+      --muted: #6b6661;
+      --field: #ffffff;
+      --field-text: #111111;
+      --border: #d4d0cb;
+    }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, "Noto Sans", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+  }
+  img { width: 160px; height: 160px; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: 1px; }
+  form { width: min(560px, 86vw); }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px 18px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--field);
+    color: var(--field-text);
+    font-size: 16px;
+    outline: none;
+  }
+  input:focus { border-color: #e22a1c; }
+  p { margin: 0; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+  <img src="logo.png" alt="">
+  <h1>SnapWeb</h1>
+  <form action="https://www.google.com/search" method="get">
+    <input type="search" name="q" placeholder="Search the web" autofocus autocomplete="off">
+  </form>
+  <p>SnapOS</p>
+</body>
+</html>

@@ -1,0 +1,83 @@
+name: Build SnapOS graphical ISO (NixOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_name:
+        description: "Artifact name (default: snapos-installer-run<N>)"
+        required: false
+        default: ""
+  push:
+    branches: [ main ]
+    paths: [ "flake.nix", "flake.lock", "configuration.nix", "nix/**", "src/**", "Makefile", "branding/**", "tests/**" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the C tools
+        run: |
+          make
+          bash tests/run.sh
+
+      - name: Install Nix (flakes)
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cache Nix store
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+
+      - name: Build the installed system (smoke test, no disk needed)
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#toplevel -L --no-link
+          nix --extra-experimental-features 'nix-command flakes' build .#toplevel-light -L --no-link
+          nix --extra-experimental-features 'nix-command flakes' build .#checks.x86_64-linux.deb -L --no-link
+          echo "OK: configuration.nix + modules/snapos.nix build cleanly."
+
+      - name: Build the installer ISO
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#iso -L
+          ls -lh result/iso/*.iso
+
+      - name: Which build is this? (job summary)
+        run: |
+          {
+            echo "### SnapOS installer ISO — run #${{ github.run_number }}"
+            echo ""
+            echo "- commit: \`${GITHUB_SHA::7}\` — $(git log -1 --pretty=%s)"
+            echo "- artifact: \`snapos-installer-run${{ github.run_number }}\`"
+            echo "- sha256: \`$(sha256sum result/iso/*.iso | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ISO
+        id: upload
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('snapos-installer-run{0}', github.run_number) }}
+          path: result/iso/*.iso
+          if-no-files-found: error
+
+      - name: Fallback, attach the ISO to a draft release
+        id: release
+        if: steps.upload.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "iso-${{ github.run_number }}" --draft --target "$GITHUB_SHA" \
+            --title "SnapOS installer ${GITHUB_SHA::7}" \
+            --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}." \
+            result/iso/*.iso
+
+      - name: Fail if the ISO was not saved anywhere
+        if: steps.upload.outcome == 'failure' && steps.release.outcome != 'success'
+        run: exit 1

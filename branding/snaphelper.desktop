@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SnapHelper
+Comment=A short tour of SnapOS
+Exec=snaphelper
+Icon=snapos
+Terminal=false
+Categories=System;

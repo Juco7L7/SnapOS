@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SnapOS Package Opener
+Comment=Scan a .deb package, then add it to SnapOS
+Exec=snap-deb %f
+Icon=application-x-deb
+Terminal=true
+Categories=System;PackageManager;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/x-debian-package;
+NoDisplay=true

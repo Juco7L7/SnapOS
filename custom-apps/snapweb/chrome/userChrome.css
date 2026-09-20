@@ -1,0 +1,61 @@
+@-moz-document url("chrome://browser/content/browser.xhtml") {
+  :root {
+    --toolbox-bgcolor: #121212 !important;
+    --toolbar-bgcolor: #181818 !important;
+    --toolbar-color: #e8e8e8 !important;
+    --lwt-accent-color: #121212 !important;
+    --lwt-text-color: #e8e8e8 !important;
+    --tab-selected-bgcolor: #262626 !important;
+    --tab-selected-textcolor: #ffffff !important;
+    --tab-line-color: #e22a1c !important;
+    --focus-outline-color: #e22a1c !important;
+    --toolbar-field-background-color: #232323 !important;
+    --toolbar-field-focus-background-color: #1c1c1c !important;
+    --toolbar-field-color: #f2f2f2 !important;
+    --toolbar-field-focus-border-color: #e22a1c !important;
+    --urlbar-box-bgcolor: #232323 !important;
+    --arrowpanel-background: #1a1a1a !important;
+    --arrowpanel-color: #e8e8e8 !important;
+    --arrowpanel-border-color: #2c2c2c !important;
+    --autocomplete-popup-highlight-background: #7a1510 !important;
+    --autocomplete-popup-highlight-color: #ffffff !important;
+    accent-color: #e22a1c !important;
+  }
+
+  /* Light desktop: the same layout with light surfaces and the red accent. */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --toolbox-bgcolor: #ece9e5 !important;
+      --toolbar-bgcolor: #f6f4f1 !important;
+      --toolbar-color: #1c1c1c !important;
+      --lwt-accent-color: #ece9e5 !important;
+      --lwt-text-color: #1c1c1c !important;
+      --tab-selected-bgcolor: #ffffff !important;
+      --tab-selected-textcolor: #111111 !important;
+      --toolbar-field-background-color: #ffffff !important;
+      --toolbar-field-focus-background-color: #ffffff !important;
+      --toolbar-field-color: #111111 !important;
+      --urlbar-box-bgcolor: #ffffff !important;
+      --arrowpanel-background: #ffffff !important;
+      --arrowpanel-color: #1c1c1c !important;
+      --arrowpanel-border-color: #d4d0cb !important;
+      --autocomplete-popup-highlight-background: #e22a1c !important;
+      --autocomplete-popup-highlight-color: #ffffff !important;
+    }
+  }
+
+  #TabsToolbar .tabbrowser-tab[selected] .tab-background {
+    border-top: 2px solid #e22a1c !important;
+  }
+
+  #urlbar[focused="true"] > #urlbar-background {
+    outline: 2px solid #e22a1c !important;
+    outline-offset: -2px !important;
+  }
+
+  #firefox-view-button,
+  #pocket-button,
+  #fxa-toolbar-menu-button {
+    display: none !important;
+  }
+}

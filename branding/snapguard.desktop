@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SnapGuard
+Comment=Snappy guards your PC
+Exec=snapguard-gui
+Icon=snapguard
+Terminal=false
+Categories=System;Security;

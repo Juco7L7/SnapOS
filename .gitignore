@@ -1,0 +1,13 @@
+*.iso
+*.img
+*.squashfs
+*.zip
+result
+result-*
+bin/
+nix/pending
+__pycache__/
+*.swp
+.DS_Store
+.idea/
+.vscode/
