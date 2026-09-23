@@ -1,0 +1,118 @@
+name: Test Debian layer
+
+# Proves that .deb packages really work on SnapOS: a Debian layer is created
+# with the same debootstrap and bubblewrap that SnapOS ships, a real package
+# from the Debian archive is installed with the libraries it needs, its window
+# opens, and removing it takes it out again.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "src/snap-deb.c"
+      - "src/snapos.c"
+      - "nix/modules/snapos.nix"
+      - ".github/workflows/snap-deb.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  debian-layer:
+    runs-on: ubuntu-latest
+    env:
+      SNAPDEB_DIR: /var/lib/snapdeb
+      SNAPOS_NIX_DIR: /tmp/snapos-nixos
+      SNAPDEB_KEYRING: ${{ github.workspace }}/security/debian-archive-keyring.gpg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix (flakes)
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Get debootstrap, bubblewrap and dpkg from the nixpkgs SnapOS uses
+        run: |
+          rev=$(jq -r .nodes.nixpkgs.locked.rev flake.lock)
+          nix build --no-link --print-out-paths \
+            ".#debootstrap" \
+            "github:NixOS/nixpkgs/$rev#bubblewrap" \
+            "github:NixOS/nixpkgs/$rev#dpkg" > tools.txt
+          grep -q util-linux "$(head -1 tools.txt)/bin/debootstrap"
+          echo "TOOLS=$(sed 's#$#/bin#' tools.txt | paste -sd:)" >> "$GITHUB_ENV"
+
+      - name: Build the SnapOS tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential xvfb xdotool
+          make all
+
+      - name: Let bubblewrap use user namespaces (Ubuntu blocks them by default)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Declare a small .deb and let sync create the Debian layer
+        run: |
+          mkdir -p "$SNAPOS_NIX_DIR/debs" pkg/DEBIAN pkg/usr/bin
+          printf 'Package: hello-snap\nVersion: 1.0\nArchitecture: amd64\nMaintainer: test\nDescription: a test package\nDepends: libc6\n' > pkg/DEBIAN/control
+          printf '#!/bin/sh\necho hello from the layer\n' > pkg/usr/bin/hello-snap
+          chmod +x pkg/usr/bin/hello-snap
+          "$(head -3 tools.txt | tail -1)/bin/dpkg-deb" --build pkg "$SNAPOS_NIX_DIR/debs/hello-snap_1.0_amd64.deb"
+          sudo env PATH="$TOOLS:$PATH" SNAPDEB_DIR="$SNAPDEB_DIR" SNAPOS_NIX_DIR="$SNAPOS_NIX_DIR" SNAPDEB_KEYRING="$SNAPDEB_KEYRING" bin/snap-deb sync
+          cat "$SNAPDEB_DIR/rootfs/etc/debian_version"
+          cat "$SNAPDEB_DIR/installed"
+          test -x "$SNAPDEB_DIR/exports/bin/hello-snap"
+
+      - name: A program from the layer runs as the user
+        run: |
+          export PATH="$TOOLS:$PATH"
+          out="$(bin/snap-deb run hello-snap)"
+          echo "$out"
+          test "$out" = "hello from the layer"
+          bin/snap-deb run cat /etc/os-release | grep -q 'ID=debian'
+          # The user's home is the real one, and the layer's root is read-only.
+          echo marker > "$HOME/snapdeb-marker"
+          test "$(bin/snap-deb run cat "$HOME/snapdeb-marker")" = marker
+          ! bin/snap-deb run touch /usr/bin/nope
+          bin/snap-deb status
+
+      - name: A real Debian package installs with the libraries it needs
+        run: |
+          export PATH="$TOOLS:$PATH"
+          cd "$RUNNER_TEMP"
+          # mousepad: a GTK text editor with a menu entry and an icon, whose
+          # libraries are not in the layer yet.
+          bin_dir="$GITHUB_WORKSPACE/bin"
+          "$bin_dir/snap-deb" run apt-get download mousepad
+          ls -l mousepad_*.deb
+          "$bin_dir/snap-deb" add ./mousepad_*.deb --force
+          sudo env PATH="$TOOLS:$PATH" SNAPDEB_DIR="$SNAPDEB_DIR" SNAPOS_NIX_DIR="$SNAPOS_NIX_DIR" SNAPDEB_KEYRING="$SNAPDEB_KEYRING" "$bin_dir/snap-deb" sync
+          "$bin_dir/snap-deb" list
+          "$bin_dir/snap-deb" list | grep -q 'mousepad.*installed'
+          test -f "$SNAPDEB_DIR/rootfs/usr/lib/x86_64-linux-gnu/libgtk-3.so.0"
+          grep -q '^Exec=snap-deb run mousepad' "$SNAPDEB_DIR/exports/share/applications/org.xfce.mousepad.desktop"
+          find "$SNAPDEB_DIR/exports/share/icons" -name 'org.xfce.mousepad*' | grep -q .
+
+      - name: Its window opens
+        run: |
+          export PATH="$SNAPDEB_DIR/exports/bin:$GITHUB_WORKSPACE/bin:$TOOLS:$PATH"
+          timeout 60 xvfb-run -a bash -c '
+            mousepad &
+            pid=$!
+            for i in $(seq 1 30); do
+              wid=$(xdotool search --name -- "Mousepad" | head -1 || true); [ -n "$wid" ] && break
+              sleep 1
+            done
+            test -n "$wid"
+            xdotool getwindowname "$wid"
+            kill $pid
+          '
+
+      - name: Removing the package takes it out of the layer
+        run: |
+          export PATH="$TOOLS:$PATH"
+          bin/snap-deb remove mousepad
+          sudo env PATH="$TOOLS:$PATH" SNAPDEB_DIR="$SNAPDEB_DIR" SNAPOS_NIX_DIR="$SNAPOS_NIX_DIR" SNAPDEB_KEYRING="$SNAPDEB_KEYRING" bin/snap-deb sync
+          ! bin/snap-deb list | grep -q mousepad
+          test ! -e "$SNAPDEB_DIR/rootfs/usr/bin/mousepad"
+          test ! -e "$SNAPDEB_DIR/exports/share/applications/org.xfce.mousepad.desktop"
+          test -x "$SNAPDEB_DIR/exports/bin/hello-snap"

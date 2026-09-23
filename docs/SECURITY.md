@@ -41,6 +41,21 @@ daemon retries by itself until it succeeds.
 `snapctl run <program>` scans any undeclared program through `snapguard`
 before it is drafted or run. `snap-deb` does the same for `.deb` files.
 
+## The Debian layer
+
+Programs from `.deb` files run inside a Debian layer (`/var/lib/snapdeb`,
+`src/snap-deb.c`) through bubblewrap: the layer's root is mounted read-only,
+`/tmp` and `/run` are private, the environment starts empty, and the program
+gets the user's home, display, sound and D-Bus sockets. This is a compatibility
+layer, not a sandbox: a program in the layer can read and write the user's
+files exactly like a native one. The layer itself is created with Debian's
+`debootstrap` against Debian's archive keys, which SnapOS ships in
+`/etc/snapos/debian-archive-keyring.gpg` (from the `debian-archive-keyring`
+package; without it no layer is created), and packages are
+installed by Debian's `apt` from the official archive with security updates
+enabled. Only root (through `snapos rebuild` or `snap-deb sync`) changes the
+layer.
+
 ## The SnapGuard window
 
 `snapguard` with no arguments opens the window (`src/snapguard-gui.c`, GTK3, installed

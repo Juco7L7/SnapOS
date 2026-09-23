@@ -1,4 +1,4 @@
-name: SnapGuard antivirus check
+name: Test SnapGuard
 
 # Proves that SnapGuard really works with ClamAV, in two ways:
 #   official-clamav : the official ClamAV release and the official virus

@@ -45,14 +45,10 @@ let
     done
   '';
 
-  # Every .deb that `snap-deb` declared sits in /etc/nixos/debs and becomes a
-  # package here. When the folder does not exist there is nothing to build.
-  debDir = ../../debs;
-  debFiles = optionalAttrs (builtins.pathExists debDir)
-    (filterAttrs (n: t: t == "regular" && hasSuffix ".deb" n) (builtins.readDir debDir));
-  debPackages = mapAttrsToList
-    (n: _: pkgs.callPackage ../pkgs/snapos-deb.nix { deb = debDir + "/${n}"; })
-    debFiles;
+  # Every .deb that `snap-deb` declared sits in /etc/nixos/debs. `snap-deb sync`
+  # installs them in a Debian layer under /var/lib/snapdeb and exports their
+  # menu entries and commands from there.
+  debLayer = "/var/lib/snapdeb";
 in {
   options.snapos = {
     desktop = mkOption {
@@ -118,7 +114,13 @@ in {
     environment.systemPackages =
       optionals config.services.xserver.enable ([ redTheme redIcons (hiPrio shieldIcons) ] ++ optional light lightTheme)
       ++ optional config.services.xserver.enable pkgs.snaphelper
-      ++ debPackages;
+      ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg ];
+
+    # Programs from the Debian layer show up in the menu and on the PATH.
+    environment.sessionVariables.XDG_DATA_DIRS = [ "${debLayer}/exports/share" ];
+    environment.extraInit = ''
+      export PATH="$PATH:${debLayer}/exports/bin"
+    '';
 
     # Lets programs built for other distributions find their libraries.
     programs.nix-ld.enable = true;
@@ -140,9 +142,12 @@ in {
     };
     environment.etc."snapos/onInfected".text = cfg.security.onInfected;
     environment.etc."snapos/signatures.txt".source = ../../security/signatures.txt;
+    # Debian's archive keys: the Debian layer is only created from a verified archive.
+    environment.etc."snapos/debian-archive-keyring.gpg".source = ../../security/debian-archive-keyring.gpg;
     systemd.tmpfiles.rules = [
       "f /etc/snapos/allow.txt 0644 root root -"
       "d /var/lib/snapos 0750 root root -"
+      "d ${debLayer} 0755 root root -"
     ];
 
     environment.etc."snapos/fastfetch.jsonc".source = ../../branding/fastfetch/config.jsonc;

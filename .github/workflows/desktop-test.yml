@@ -1,4 +1,4 @@
-name: Desktop VM test
+name: Test desktop
 
 on:
   workflow_dispatch:

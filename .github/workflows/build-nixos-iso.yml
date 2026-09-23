@@ -1,10 +1,10 @@
-name: Build SnapOS graphical ISO (NixOS)
+name: Build ISO
 
 on:
   workflow_dispatch:
     inputs:
       iso_name:
-        description: "Artifact name (default: snapos-installer-run<N>)"
+        description: "Release tag (default: iso-<run number>)"
         required: false
         default: ""
   push:
@@ -39,7 +39,6 @@ jobs:
         run: |
           nix --extra-experimental-features 'nix-command flakes' build .#toplevel -L --no-link
           nix --extra-experimental-features 'nix-command flakes' build .#toplevel-light -L --no-link
-          nix --extra-experimental-features 'nix-command flakes' build .#checks.x86_64-linux.deb -L --no-link
           echo "OK: configuration.nix + modules/snapos.nix build cleanly."
 
       - name: Build the installer ISO
@@ -53,31 +52,20 @@ jobs:
             echo "### SnapOS installer ISO — run #${{ github.run_number }}"
             echo ""
             echo "- commit: \`${GITHUB_SHA::7}\` — $(git log -1 --pretty=%s)"
-            echo "- artifact: \`snapos-installer-run${{ github.run_number }}\`"
+            echo "- release: \`${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-{0}', github.run_number) }}\` (draft)"
             echo "- sha256: \`$(sha256sum result/iso/*.iso | cut -d' ' -f1)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload ISO
-        id: upload
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('snapos-installer-run{0}', github.run_number) }}
-          path: result/iso/*.iso
-          if-no-files-found: error
-
-      - name: Fallback, attach the ISO to a draft release
-        id: release
-        if: steps.upload.outcome == 'failure'
-        continue-on-error: true
+      # A draft release holds the plain .iso file (an Actions artifact would be
+      # wrapped in a zip). Only the repository owner sees drafts.
+      - name: Attach the ISO to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "iso-${{ github.run_number }}" --draft --target "$GITHUB_SHA" \
+          cp result/iso/*.iso snapos-installer.iso
+          sha256sum snapos-installer.iso > snapos-installer.iso.sha256
+          tag="${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-{0}', github.run_number) }}"
+          gh release create "$tag" --draft --target "$GITHUB_SHA" \
             --title "SnapOS installer ${GITHUB_SHA::7}" \
-            --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}." \
-            result/iso/*.iso
-
-      - name: Fail if the ISO was not saved anywhere
-        if: steps.upload.outcome == 'failure' && steps.release.outcome != 'success'
-        run: exit 1
+            --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}. Flash with balenaEtcher." \
+            snapos-installer.iso snapos-installer.iso.sha256

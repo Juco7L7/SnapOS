@@ -29,6 +29,14 @@
         };
         snapos-backgrounds = final.callPackage ./nix/pkgs/snapos-backgrounds.nix { };
         budgie-backgrounds = final.snapos-backgrounds;
+        # nixpkgs wraps debootstrap with a fixed PATH that has no `mount`, and
+        # debootstrap needs it while it builds the Debian layer.
+        debootstrap = prev.debootstrap.overrideAttrs (old: {
+          postInstall = (old.postInstall or "") + ''
+            sed -i "s|^export PATH='|export PATH='${final.util-linux}/bin:|" $out/bin/debootstrap
+            grep -q "${final.util-linux}/bin" $out/bin/debootstrap
+          '';
+        });
       };
 
       pkgs = import nixpkgs { inherit system; overlays = [ snaposOverlay ]; };
@@ -60,15 +68,14 @@
 
       packages.${system} = {
         snapos-tools = pkgs.snapos-tools;
+        debootstrap = pkgs.debootstrap;
         iso = self.nixosConfigurations.snapos-installer.config.system.build.isoImage;
         toplevel = self.nixosConfigurations.snapos.config.system.build.toplevel;
         toplevel-light = self.nixosConfigurations.snapos-light.config.system.build.toplevel;
         default = pkgs.snapos-tools;
       };
 
-      checks.${system} =
-        import ./nix/tests/desktop.nix { inherit pkgs; }
-        // import ./nix/tests/deb.nix { inherit pkgs; };
+      checks.${system} = import ./nix/tests/desktop.nix { inherit pkgs; };
 
       devShells.${system}.default = pkgs.mkShell { packages = [ pkgs.gcc pkgs.gnumake ]; };
     };

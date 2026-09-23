@@ -24,13 +24,13 @@ nix build .#iso             # result/iso/snapos-installer.iso
 nix build .#toplevel        # the installed system
 nix build .#toplevel-light  # the installed system, light appearance
 nix build .#snapos-tools    # only the C tools
-nix build .#checks.x86_64-linux.deb   # the .deb packaging test
 nix develop                 # a shell with gcc and make for src/
 ```
 
 GitHub Actions does the same: `build-nixos-iso.yml` builds the system, the light
 system and the ISO; `desktop-test.yml` boots the desktop in a VM;
-`snapguard-av.yml` checks SnapGuard against the official ClamAV.
+`snapguard-av.yml` checks SnapGuard against the official ClamAV; `snap-deb.yml`
+creates a real Debian layer and installs, runs and removes a real `.deb` in it.
 
 ## On the installed system
 
@@ -46,5 +46,8 @@ Both ask for root through `sudo` by themselves (`src/snapos.c`).
 ## Extra packages
 
 - **`custom-apps/<name>/default.nix`** becomes `pkgs.<name>` automatically.
-- **`/etc/nixos/debs/*.deb`**, added with `snap-deb`, are built into packages by
-  [`pkgs/snapos-deb.nix`](pkgs/snapos-deb.nix) on the next rebuild.
+- **`/etc/nixos/debs/*.deb`**, added with `snap-deb`, are installed by
+  `snap-deb sync` (which `snapos rebuild` runs) into a Debian layer at
+  `/var/lib/snapdeb`, with the libraries they need from the Debian archive.
+  The module puts the layer's exported menu entries and commands on
+  `XDG_DATA_DIRS` and `PATH`; `src/snap-deb.c` does the rest.

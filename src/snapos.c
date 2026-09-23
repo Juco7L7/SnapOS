@@ -1,9 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
+#include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #define DEFAULT_DIR "/etc/nixos"
 #define FLAKE_ATTR  "snapos"
@@ -63,6 +65,35 @@ static int cmd_config(void) {
     return 1;
 }
 
+static int run(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        perror(argv[0]);
+        _exit(127);
+    }
+    int st;
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* The Debian layer follows the .deb files declared in <nixdir>/debs. */
+static int has_debs(void) {
+    char dir[PATH_MAX];
+    snprintf(dir, sizeof dir, "%s/debs", nixdir());
+    DIR *dh = opendir(dir);
+    if (!dh) return 0;
+    struct dirent *e;
+    int n = 0;
+    while ((e = readdir(dh))) {
+        size_t len = strlen(e->d_name);
+        if (len > 4 && !strcmp(e->d_name + len - 4, ".deb")) n++;
+    }
+    closedir(dh);
+    return n > 0 || access("/var/lib/snapdeb/installed", F_OK) == 0;
+}
+
 static int cmd_rebuild(int argc, char **argv) {
     char flake[PATH_MAX + 16];
     snprintf(flake, sizeof flake, "path:%s#%s", nixdir(), FLAKE_ATTR);
@@ -87,10 +118,19 @@ static int cmd_rebuild(int argc, char **argv) {
     for (int i = extra; i < argc; i++) nargv[k++] = argv[i];
 
     fprintf(stderr, "snapos: nixos-rebuild %s --flake %s\n\n", mode, flake);
-    execvp("nixos-rebuild", nargv);
-    perror("snapos: could not run nixos-rebuild (is this a NixOS/SnapOS system?)");
+    int rc = run(nargv);
     free(nargv);
-    return 1;
+    if (rc != 0) {
+        fprintf(stderr, "snapos: nixos-rebuild failed (is this a NixOS/SnapOS system?)\n");
+        return rc < 0 ? 1 : rc;
+    }
+    if (strcmp(mode, "dry-build") != 0 && has_debs()) {
+        fprintf(stderr, "\nsnapos: snap-deb sync\n\n");
+        char *sync[] = { "snap-deb", "sync", NULL };
+        rc = run(sync);
+        if (rc != 0) fprintf(stderr, "snapos: the Debian layer is not up to date; see 'snap-deb status'\n");
+    }
+    return rc < 0 ? 1 : rc;
 }
 
 static int cmd_doctor(void) {
@@ -101,6 +141,7 @@ static int cmd_doctor(void) {
         "echo; echo '== display manager'; journalctl -u display-manager -b --no-pager -n 25\n"
         "echo; echo '== X errors'; grep -E '\\(EE\\)' /var/log/X.0.log 2>/dev/null | head -20\n"
         "echo; echo '== graphics kernel messages'; dmesg 2>/dev/null | grep -iE 'drm|radeon|amdgpu|nouveau|i915|firmware' | tail -15\n"
+        "echo; echo '== Debian layer'; snap-deb status 2>&1\n"
         "echo; echo '== antivirus'; snapguard status 2>&1\n"
         "echo; systemctl is-active clamav-freshclam clamav-daemon 2>&1\n"
         "echo; journalctl -u clamav-freshclam -b --no-pager -n 6 2>&1\n";

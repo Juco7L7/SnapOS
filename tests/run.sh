@@ -202,6 +202,9 @@ GUARD
     check "remove takes it out again" bash -c "[ -z \"\$(ls '$SNAPOS_NIX_DIR/debs')\" ]"
     "$D" remove nothing-here >/dev/null 2>&1
     check_eq "removing something unknown is an error" "2" "$?"
+    sd add "$TMP/deb/hello-snap_2.0_amd64.deb" >/dev/null 2>&1
+    "$D" remove hello-snap_2.0_amd64.deb >/dev/null 2>&1
+    check "remove also accepts the file name" bash -c "[ -z \"\$(ls '$SNAPOS_NIX_DIR/debs')\" ]"
 
     FAKE_RC=1 sd add "$TMP/deb/hello-snap_1.0_amd64.deb" >/dev/null 2>&1
     check_eq "a threat is refused" "1" "$?"
@@ -211,9 +214,72 @@ GUARD
     check_eq "a file that could not be scanned is refused" "2" "$?"
     FAKE_RC=2 sd add "$TMP/deb/hello-snap_1.0_amd64.deb" --force >/dev/null 2>&1
     check "--force adds it anyway" test -f "$SNAPOS_NIX_DIR/debs/hello-snap_1.0_amd64.deb"
+    mkdir -p "$TMP/deb/svc/DEBIAN" "$TMP/deb/svc/usr/bin" "$TMP/deb/svc/lib/systemd/system"
+    printf 'Package: vpn-thing\nVersion: 1.0\nArchitecture: amd64\nMaintainer: test\nDescription: a program with a daemon\n' > "$TMP/deb/svc/DEBIAN/control"
+    printf '[Unit]\nDescription=daemon\n[Service]\nExecStart=/usr/bin/vpn-thing\n' > "$TMP/deb/svc/lib/systemd/system/vpn-thing.service"
+    printf '#!/bin/sh\n' > "$TMP/deb/svc/usr/bin/vpn-thing"
+    dpkg-deb --build "$TMP/deb/svc" "$TMP/deb/vpn-thing_1.0_amd64.deb" >/dev/null 2>&1
+    out="$(sd add "$TMP/deb/vpn-thing_1.0_amd64.deb" 2>&1)"; rc=$?
+    check_eq "a package with a system service is refused" "2" "$rc"
+    check "and the refusal names the service and the way out" bash -c "printf '%s' \"\$1\" | grep -q 'vpn-thing.service' && printf '%s' \"\$1\" | grep -q 'search.nixos.org'" _ "$out"
+    check "and it is not declared" bash -c "! ls '$SNAPOS_NIX_DIR/debs' | grep -q vpn-thing"
     unset SNAPOS_NIX_DIR
 fi
 check "the .deb opener is the default for .deb files" grep -q 'application/vnd.debian.binary-package' "$ROOT/branding/snap-deb.desktop"
+
+section "snap-deb: the Debian layer"
+D="$BIN/snap-deb"
+L="$TMP/layer"; R="$L/rootfs"
+mkdir -p "$R/etc" "$R/var/lib/dpkg/info" "$R/usr/bin" "$R/usr/share/applications" "$R/usr/share/icons/hicolor/48x48/apps" "$R/usr/share/doc/hello-snap"
+echo "13.1" > "$R/etc/debian_version"
+printf '#!/bin/sh\necho hi\n' > "$R/usr/bin/hello-snap"
+chmod +x "$R/usr/bin/hello-snap"
+printf '[Desktop Entry]\nType=Application\nName=Hello\nExec=/usr/bin/hello-snap %%U\nTryExec=/usr/bin/hello-snap\nIcon=hello-snap\nDBusActivatable=true\n' > "$R/usr/share/applications/hello-snap.desktop"
+: > "$R/usr/share/icons/hicolor/48x48/apps/hello-snap.png"
+printf '/usr/bin/hello-snap\n/usr/share/applications/hello-snap.desktop\n/usr/share/icons/hicolor/48x48/apps/hello-snap.png\n/usr/share/doc/hello-snap\n' > "$R/var/lib/dpkg/info/hello-snap.list"
+echo "hello-snap hello-snap_1.0_amd64.deb" > "$L/installed"
+export SNAPDEB_DIR="$L" SNAPOS_NIX_DIR="$TMP/nixlayer"
+mkdir -p "$SNAPOS_NIX_DIR/debs"
+: > "$SNAPOS_NIX_DIR/debs/hello-snap_1.0_amd64.deb"
+"$D" export >/dev/null 2>&1
+check_eq "export succeeds on a layer" "0" "$?"
+E="$L/exports"
+check "export writes a command wrapper" bash -c "[ -x '$E/bin/hello-snap' ] && grep -q 'exec snap-deb run hello-snap' '$E/bin/hello-snap'"
+check "the exported menu entry runs through the layer" grep -q '^Exec=snap-deb run /usr/bin/hello-snap %U' "$E/share/applications/hello-snap.desktop"
+check "the exported menu entry drops TryExec and DBusActivatable" bash -c "! grep -qE '^(TryExec|DBusActivatable)=' '$E/share/applications/hello-snap.desktop'"
+check "the exported menu entry names its package" grep -q '^X-SnapOS-Package=hello-snap$' "$E/share/applications/hello-snap.desktop"
+check "the icon is exported" test -L "$E/share/icons/hicolor/48x48/apps/hello-snap.png"
+check "documentation is not exported" bash -c "! find '$E' -name '*doc*' | grep -q ."
+out="$("$D" status 2>&1)"
+check "status shows the Debian version" bash -c "printf '%s' \"\$1\" | grep -q '13.1'" _ "$out"
+check "status counts the installed packages" bash -c "printf '%s' \"\$1\" | grep -q '1 package'" _ "$out"
+check "list shows the package as installed" bash -c "'$D' list | grep -q 'hello-snap_1.0_amd64.deb.*installed'"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$FAKE_OUT"\n' > "$TMP/fakebwrap"
+chmod +x "$TMP/fakebwrap"
+mkdir -p "$TMP/home"
+FAKE_OUT="$TMP/bwrap-args" SNAPDEB_BWRAP="$TMP/fakebwrap" HOME="$TMP/home" "$D" run hello-snap --flag
+check "run mounts the layer as the root" bash -c "grep -A2 -x -- '--ro-bind' '$TMP/bwrap-args' | grep -A1 -x '$R' | grep -qx '/'"
+check "run keeps the home folder" bash -c "grep -A2 -x -- '--bind' '$TMP/bwrap-args' | grep -qx '$TMP/home'"
+check "run starts from a clean environment" grep -qx -- '--clearenv' "$TMP/bwrap-args"
+check_eq "run passes the command and its arguments" "hello-snap --flag" "$(tail -2 "$TMP/bwrap-args" | tr '\n' ' ' | sed 's/ $//')"
+SNAPDEB_DIR="$TMP/nolayer" "$D" run hello-snap >/dev/null 2>&1
+check_eq "run without a layer is refused" "2" "$?"
+rm -f "$SNAPOS_NIX_DIR/debs/hello-snap_1.0_amd64.deb"
+check "list marks a removed file as gone" bash -c "! '$D' list | grep -q hello-snap"
+unset SNAPDEB_DIR SNAPOS_NIX_DIR
+check "snapos rebuild syncs the Debian layer" grep -q '"snap-deb", "sync"' "$ROOT/src/snapos.c"
+check "the module exports the layer to the menu" grep -q 'debLayer}/exports/share' "$ROOT/nix/modules/snapos.nix"
+check "the module ships bubblewrap and debootstrap" bash -c "grep -q 'pkgs.bubblewrap' '$ROOT/nix/modules/snapos.nix' && grep -q 'pkgs.debootstrap' '$ROOT/nix/modules/snapos.nix'"
+check "the Debian archive keyring is shipped" bash -c "[ -s '$ROOT/security/debian-archive-keyring.gpg' ] && grep -q 'debian-archive-keyring.gpg' '$ROOT/nix/modules/snapos.nix'"
+check "the layer is created only from a verified archive" grep -q -- '--keyring=' "$ROOT/src/snap-deb.c"
+check "install scripts that call systemctl do not fail" bash -c "grep -q '\"systemctl\", \"service\"' '$ROOT/src/snap-deb.c' && grep -q 'policy-rc.d' '$ROOT/src/snap-deb.c'"
+check "debootstrap gets mount on its PATH" grep -q 'util-linux}/bin' "$ROOT/flake.nix"
+mkdir -p "$TMP/nolayer2" "$TMP/nixkey/debs"
+: > "$TMP/nixkey/debs/hello-snap_1.0_amd64.deb"
+out="$(SNAPDEB_DIR="$TMP/nolayer2" SNAPOS_NIX_DIR="$TMP/nixkey" SNAPDEB_KEYRING="$TMP/no-such-keyring" "$D" sync 2>&1)"; rc=$?
+check_eq "sync refuses to create a layer without the keyring" "1" "$rc"
+check "and says which file is missing" bash -c "printf '%s' \"\$1\" | grep -q 'no-such-keyring is missing'" _ "$out"
+check "and leaves nothing behind" bash -c "[ ! -e '$TMP/nolayer2/rootfs.new' ]"
 
 section "snapos"
 mkdir -p "$TMP/fake"
@@ -303,7 +369,7 @@ check "installer syntax" bash -n "$ROOT/nix/installer/snap-install-nixos.sh"
 if command -v shellcheck >/dev/null 2>&1; then
     check "installer shellcheck" shellcheck -x "$ROOT/nix/installer/snap-install-nixos.sh"
 fi
-python3 -c "import yaml" 2>/dev/null && check "workflow is valid yaml" python3 -c "import yaml,sys; yaml.safe_load(open('$ROOT/.github/workflows/build-nixos-iso.yml')); yaml.safe_load(open('$ROOT/.github/workflows/snapguard-av.yml'))"
+python3 -c "import yaml" 2>/dev/null && check "workflow is valid yaml" python3 -c "import yaml,sys; yaml.safe_load(open('$ROOT/.github/workflows/build-nixos-iso.yml')); yaml.safe_load(open('$ROOT/.github/workflows/snapguard-av.yml')); yaml.safe_load(open('$ROOT/.github/workflows/snap-deb.yml')); yaml.safe_load(open('$ROOT/.github/workflows/desktop-test.yml'))"
 for f in flake.nix configuration.nix nix/iso.nix nix/modules/snapos.nix nix/pkgs/snapos-tools.nix nix/pkgs/snapguard.nix nix/pkgs/snapos-backgrounds.nix nix/pkgs/snapos-icons.nix custom-apps/snapweb/default.nix nix/tests/desktop.nix nix/modules/integrated-graphics.nix; do
     o=$(grep -o '{' "$ROOT/$f" | wc -l)
     c=$(grep -o '}' "$ROOT/$f" | wc -l)
