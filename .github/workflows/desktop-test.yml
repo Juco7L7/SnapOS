@@ -25,8 +25,6 @@ jobs:
       - name: Install Nix (flakes)
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Boot the installed desktop in a VM
         run: |

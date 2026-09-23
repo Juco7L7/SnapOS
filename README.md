@@ -9,6 +9,18 @@
 > [!CAUTION]
 > **Flashing the ISO: use [balenaEtcher](https://etcher.balena.io).** Select `snapos-installer.iso`, select your USB drive, click *Flash!* and wait for the validation to finish. Do not copy the file onto the drive by hand, and do not use "ISO mode" tools (in Rufus, choose *DD Image mode*). If the boot stops with `unable to read id index table`, the download or the USB drive is damaged: compare the SHA-256 of the file with the one on the release page, then download and flash again.
 
+> [!WARNING]
+> **Versions before V2.0 (V1 and V1.1) should not be used any more.** They run
+> NixOS 24.11 with Linux 6.6.94, a base that stopped receiving security fixes
+> on 30 June 2025: every kernel vulnerability found since then, including the
+> ones that let a normal user become root, is unpatched there. Their Debian
+> layer (V1.1) also ran a package's install script as root with every Linux
+> capability and no pid namespace, so a malicious `.deb` could leave the layer
+> and take over the machine. **V2.0 moves to NixOS 26.05 with Linux 6.18**, gives
+> that root only the powers dpkg needs, and updates itself from now on. Install
+> V2.0 from the Releases page (boot the image and choose "Update SnapOS (keeps
+> your files)" on an existing system).
+
 ---
 
 SnapOS is a Budgie desktop with a red theme, a built-in defender (SnapGuard),
@@ -83,7 +95,7 @@ If SnapOS is already installed, run the installer again and pick **Update SnapOS
 
 The installer asks whether you want a dark or a light desktop. The theme,
 icons, wallpaper, login screen, the SnapGuard shield and SnapWeb all follow it.
-To switch later, change `snapos.appearance` in `/etc/nixos/local.nix` and run
+To switch later, change `snapos.appearance` in `/etc/snapos/local.nix` and run
 `snapos rebuild`.
 
 <p align="center">
@@ -96,6 +108,8 @@ To switch later, change `snapos.appearance` in `/etc/nixos/local.nix` and run
 | --- | --- |
 | `snapos config` | open `configuration.nix` in your editor |
 | `snapos rebuild` | apply your changes to the system |
+| `snapos update` | install the latest SnapOS release, keeping your files (checked at every login) |
+| `snapos version` | the SnapOS version this system runs (also in `fastfetch` and `/etc/os-release`) |
 | `snapos doctor` | check graphics, boot and antivirus problems |
 | `snap-deb FILE.deb` | scan a `.deb`, then add it to SnapOS (also what double-clicking one does) |
 | `snap-deb list` / `remove NAME` | packages added this way |
@@ -113,7 +127,34 @@ To switch later, change `snapos.appearance` in `/etc/nixos/local.nix` and run
 | `snappy` / `snappy feed` / `snappy pet` | the mascot |
 | `fastfetch` | system information |
 
-`snapos` asks for root through `sudo` on its own.
+`snapos` asks for root through `sudo` on its own. The system lives in
+`/etc/snapos` (`/etc/nixos` points there, so NixOS tools work too).
+
+## Updates
+
+At every login SnapOS asks GitHub whether a newer release exists. If one does,
+a window shows its notes and an **Install now** button. Installing runs
+`snapos update` in a terminal, in four steps:
+
+1. **Checking**: the computer is x86_64, `/nix` has room, the release is not
+   older than the installed one (by date, and by the `VERSION` number once the
+   package is downloaded; `--force` overrides), and the release ships its
+   source package with a checksum.
+2. **Downloading**: the source package is fetched and its SHA-256 compared with
+   the checksum the release carries; a mismatch stops everything.
+3. **Keeping your files**: `configuration.nix`, `local.nix`, the hardware
+   file, the graphics mode and your `.deb` files are carried over.
+4. **Building the next system**: the new system is built and made the default
+   for the *next* boot only; what is running is not touched. The Debian layer
+   gets Debian's security updates.
+
+Then you restart. The new system gets one try: it is approved the moment a
+normal user logs in. If it never reaches the login screen, or nobody manages
+to log in within ten minutes, SnapOS goes back to the previous generation by
+itself on the next start and tells you at login. You can run `snapos update`
+yourself at any time, and `snapos update check` only asks.
+The Wi-Fi network you chose in the installer is kept, so the installed system
+connects by itself and updates can download right away.
 
 ## Installing programs
 
@@ -144,13 +185,13 @@ first and adds it to the list only when you run `snapctl save`. There is no
 </p>
 
 A `.deb` is not written to `configuration.nix`. It is declared by `snap-deb`,
-which keeps the file in `/etc/nixos/debs/`, and `snapos rebuild` applies that
+which keeps the file in `/etc/snapos/debs/`, and `snapos rebuild` applies that
 folder the same way it applies the configuration. Double-click a `.deb` (or run
 `snap-deb FILE.deb`) and this happens:
 
 1. **SnapGuard scans the file.** A threat goes to quarantine and nothing is
    installed. A file that cannot be scanned is refused unless you insist.
-2. **The file is declared**: copied to `/etc/nixos/debs/`. A newer version of
+2. **The file is declared**: copied to `/etc/snapos/debs/`. A newer version of
    the same package replaces the older one.
 3. **`snapos rebuild` installs it in the Debian layer**, a small real Debian
    (Debian 13) that lives in `/var/lib/snapdeb`. It is created the first time you
@@ -191,6 +232,7 @@ like a native one, which is why SnapGuard scans every `.deb` first.
 SnapGuard combines ClamAV, a SnapOS hash list and a trust list. When a scan
 finds a threat, the file is moved to quarantine and its execute bits are
 removed. You then choose to **keep and trust** it or **delete** it.
+
 
 The window offers a quick scan of Downloads, folder and file scans and a
 quarantine view. While it scans it shows each file as it is checked, and when

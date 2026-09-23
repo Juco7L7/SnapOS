@@ -13,7 +13,6 @@ on:
       - "src/snapguard.c"
       - "src/snapguard-gui.c"
       - "src/snaphelper.c"
-      - "src/snapguard.c"
       - "nix/modules/snapos.nix"
       - "nix/tests/desktop.nix"
       - ".github/workflows/snapguard-av.yml"
@@ -153,8 +152,6 @@ jobs:
       - name: Install Nix (flakes)
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: ClamAV as SnapOS configures it, in a VM
         run: |

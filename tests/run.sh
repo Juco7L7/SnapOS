@@ -272,6 +272,7 @@ check "the module exports the layer to the menu" grep -q 'debLayer}/exports/shar
 check "the module ships bubblewrap and debootstrap" bash -c "grep -q 'pkgs.bubblewrap' '$ROOT/nix/modules/snapos.nix' && grep -q 'pkgs.debootstrap' '$ROOT/nix/modules/snapos.nix'"
 check "the Debian archive keyring is shipped" bash -c "[ -s '$ROOT/security/debian-archive-keyring.gpg' ] && grep -q 'debian-archive-keyring.gpg' '$ROOT/nix/modules/snapos.nix'"
 check "the layer is created only from a verified archive" grep -q -- '--keyring=' "$ROOT/src/snap-deb.c"
+check "apt in the layer runs without SYS_ADMIN or MKNOD and in its own pid namespace" bash -c "! grep -q '\"ALL\"' '$ROOT/src/snap-deb.c' && grep -q 'CAP_SYS_CHROOT' '$ROOT/src/snap-deb.c' && ! grep -q 'CAP_SYS_ADMIN' '$ROOT/src/snap-deb.c' && grep -q -- '--unshare-pid' '$ROOT/src/snap-deb.c'"
 check "install scripts that call systemctl do not fail" bash -c "grep -q '\"systemctl\", \"service\"' '$ROOT/src/snap-deb.c' && grep -q 'policy-rc.d' '$ROOT/src/snap-deb.c'"
 check "debootstrap gets mount on its PATH" grep -q 'util-linux}/bin' "$ROOT/flake.nix"
 mkdir -p "$TMP/nolayer2" "$TMP/nixkey/debs"
@@ -292,6 +293,129 @@ if [ "$(id -u)" -ne 0 ]; then
     out="$(PATH="$TMP/fake:$PATH" "$BIN/snapos" rebuild 2>&1)"
     check "asks sudo to rebuild" bash -c "printf '%s' \"\$1\" | grep -q 'SUDO .*/snapos rebuild'" _ "$out"
 fi
+
+section "snapos update"
+U="$TMP/upd"
+mkdir -p "$U/api/releases" "$U/api/git/ref/tags" "$U/archive" "$U/sys/debs" "$U/bin" "$U/src/snapos/nix" "$U/state" "$U/profile/system-42-link/bin" "$U/profile/system-43-link"
+NEWSHA="0123456789abcdef0123456789abcdef01234567"
+printf '{ }\n' > "$U/src/snapos/flake.nix"
+printf '2.1\n' > "$U/src/snapos/VERSION"
+printf '2.0\n' > "$U/sys/VERSION"
+printf '# release template\n{ }\n' > "$U/src/snapos/configuration.nix"
+printf 'new\n' > "$U/src/snapos/README.md"
+tar -czf "$U/archive/snapos-source.tar.gz" -C "$U/src" snapos
+(cd "$U/archive" && sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256)
+cat > "$U/api/releases/latest" <<JSON
+{"tag_name":"V2.1","name":"SnapOS installer V2.1","published_at":"2026-10-01T00:00:00Z","body":"Deeper .deb system.\\nFaster boot.",
+ "assets":[{"name":"snapos-installer.iso","browser_download_url":"file://$U/archive/snapos-installer.iso"},
+           {"name":"snapos-source.tar.gz","browser_download_url":"file://$U/archive/snapos-source.tar.gz"},
+           {"name":"snapos-source.tar.gz.sha256","browser_download_url":"file://$U/archive/snapos-source.tar.gz.sha256"}]}
+JSON
+printf '{"ref":"refs/tags/V2.1","object":{"sha":"%s","type":"commit"}}\n' "$NEWSHA" > "$U/api/git/ref/tags/V2.1"
+printf 'abc1234abc1234abc1234abc1234abc1234abc12\n2026-09-01T00:00:00Z\nSnapOS installer V2.0\n' > "$U/sys/release"
+printf '# mine\n{ }\n' > "$U/sys/configuration.nix"
+printf '{ }\n' > "$U/sys/local.nix"
+printf '{ }\n' > "$U/sys/hardware-configuration.nix"
+: > "$U/sys/debs/hello-snap_1.0_amd64.deb"
+printf 'old\n' > "$U/sys/README.md"
+ln -s system-42-link "$U/profile/system"
+printf '#!/bin/sh\necho "STC $*" >> "%s/calls"\n' "$U" > "$U/profile/system-42-link/bin/switch-to-configuration"
+chmod +x "$U/profile/system-42-link/bin/switch-to-configuration"
+printf '#!/bin/sh\necho "REBUILD $*" >> "%s/calls"\nexit ${FAKE_REBUILD_RC:-0}\n' "$U" > "$U/bin/nixos-rebuild"
+printf '#!/bin/sh\necho "SNAPDEB $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/snap-deb"
+printf '#!/bin/sh\necho "NIXENV $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/nix-env"
+printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/systemctl"
+printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
+chmod +x "$U/bin"/*
+up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_STATE_DIR="$U/state" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+out="$(up update check 2>&1)"; rc=$?
+check_eq "check reports a newer release with exit 10" "10" "$rc"
+check "check prints the tag, the commit and the notes" bash -c "printf '%s' \"\$1\" | grep -q '^tag V2.1' && printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
+out="$(up version 2>&1)"
+check "version shows the SnapOS version, build and date" bash -c "printf '%s' \"\$1\" | grep -q 'SnapOS V2.0 (build abc1234, released 2026-09-01)'" _ "$out"
+printf '1.9\n' > "$U/src/snapos/VERSION"
+tar -czf "$U/archive/snapos-source.tar.gz" -C "$U/src" snapos
+(cd "$U/archive" && sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256)
+out="$(up update 2>&1)"; rc=$?
+check_eq "a release with a lower VERSION is refused after the download" "1" "$rc"
+check "and it says which versions" bash -c "printf '%s' \"\$1\" | grep -q 'V2.0 installed, V1.9 in the release' && grep -q '^old' '$U/sys/README.md'" _ "$out"
+printf '2.1\n' > "$U/src/snapos/VERSION"
+tar -czf "$U/archive/snapos-source.tar.gz" -C "$U/src" snapos
+(cd "$U/archive" && sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256)
+
+out="$(SNAPOS_MIN_FREE_MB=999999999 env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_STATE_DIR="$U/state" SNAPOS_PROFILE="$U/profile/system" "$BIN/snapos" update 2>&1)"; rc=$?
+check_eq "the checklist refuses when the disk is too full" "1" "$rc"
+check "and says nothing was changed" bash -c "printf '%s' \"\$1\" | grep -q 'Nothing was changed' && grep -q '^old' '$U/sys/README.md'" _ "$out"
+printf 'abc1234abc1234abc1234abc1234abc1234abc12\n2026-12-01T00:00:00Z\nfuture\n' > "$U/sys/release"
+out="$(up update 2>&1)"; rc=$?
+check_eq "a downgrade is refused" "1" "$rc"
+check "and --force is offered" bash -c "printf '%s' \"\$1\" | grep -q 'older than the installed one' && printf '%s' \"\$1\" | grep -q -- '--force'" _ "$out"
+printf 'abc1234abc1234abc1234abc1234abc1234abc12\n2026-09-01T00:00:00Z\nSnapOS installer V2.0\n' > "$U/sys/release"
+cp "$U/archive/snapos-source.tar.gz.sha256" "$U/archive/good.sha256"
+printf '%064d  snapos-source.tar.gz\n' 0 > "$U/archive/snapos-source.tar.gz.sha256"
+out="$(up update 2>&1)"; rc=$?
+check_eq "a download that does not match its checksum is refused" "1" "$rc"
+check "and the system files are untouched" bash -c "printf '%s' \"\$1\" | grep -q 'does not match its checksum' && grep -q '^old' '$U/sys/README.md' && [ ! -e '$U/state/update-pending' ]" _ "$out"
+cp "$U/archive/good.sha256" "$U/archive/snapos-source.tar.gz.sha256"
+
+out="$(up update 2>&1)"; rc=$?
+check_eq "update succeeds" "0" "$rc"
+check "the checklist passes and the checksum matches" bash -c "printf '%s' \"\$1\" | grep -q 'Checksum matches' && printf '%s' \"\$1\" | grep -q 'Not a downgrade'" _ "$out"
+check "update builds the next boot, not the running system" bash -c "grep -q 'REBUILD boot --flake path:$U/sys#snapos' '$U/calls' && ! grep -q 'REBUILD switch' '$U/calls'"
+check "update replaces the system files" bash -c "[ -f '$U/sys/flake.nix' ] && grep -q new '$U/sys/README.md'"
+check "update keeps the user's configuration.nix" grep -q '^# mine' "$U/sys/configuration.nix"
+check "update keeps the release's example beside it" grep -q 'release template' "$U/sys/configuration.nix.new"
+check "update keeps local.nix, hardware and the debs" bash -c "[ -f '$U/sys/local.nix' ] && [ -f '$U/sys/hardware-configuration.nix' ] && [ -f '$U/sys/debs/hello-snap_1.0_amd64.deb' ]"
+check "update brings the new VERSION" grep -q '^2.1' "$U/sys/VERSION"
+check "update records the new release with its date" bash -c "grep -q '^$NEWSHA' '$U/sys/release' && grep -q '2026-10-01' '$U/sys/release'"
+check "update leaves a pending marker with the previous generation" bash -c "grep -q '^previous=42' '$U/state/update-pending' && grep -q '^attempts=0' '$U/state/update-pending' && grep -q 'V2.1' '$U/state/update-pending'"
+check "update keeps the previous files until the new system is approved" test -d "$U/sys.old"
+check "update syncs and upgrades the Debian layer" bash -c "grep -q 'SNAPDEB sync' '$U/calls' && grep -q 'SNAPDEB upgrade' '$U/calls'"
+check "update does not restart on its own" bash -c "! grep -q 'SYSTEMCTL reboot' '$U/calls'"
+up update check >/dev/null 2>&1
+check_eq "check is quiet once the release is installed" "0" "$?"
+
+section "snapos update: the boot guard"
+up guard boot >/dev/null 2>&1
+check "the first boot of a new system is let through" grep -q '^attempts=1' "$U/state/update-pending"
+: > "$U/users"
+out="$(SNAPOS_APPROVE_TIMEOUT=1 up guard approve 2>&1)"
+check "nobody logs in: the previous generation comes back" bash -c "grep -q 'NIXENV -p $U/profile/system --switch-generation 42' '$U/calls' && grep -q 'STC boot' '$U/calls'"
+check "the previous files come back too" bash -c "grep -q '^old' '$U/sys/README.md' && [ ! -e '$U/sys.old' ] && [ -d '$U/sys.failed' ]"
+check "the pending marker is gone and the rollback is recorded" bash -c "[ ! -e '$U/state/update-pending' ] && grep -q 'V2.1' '$U/state/update-rolled-back'"
+up guard boot >/dev/null 2>&1; up guard approve >/dev/null 2>&1
+check_eq "without the marker the guard does nothing" "1" "$(grep -c NIXENV "$U/calls")"
+: > "$U/calls"
+mkdir -p "$U/sys.old"
+printf 'previous=42\nattempts=0\nname=V2.1\n' > "$U/state/update-pending"
+up guard boot >/dev/null 2>&1
+printf '1000 tester\n' > "$U/users"
+out="$(SNAPOS_APPROVE_TIMEOUT=1 up guard approve 2>&1)"
+check "someone logs in: the new system is approved" bash -c "[ ! -e '$U/state/update-pending' ] && [ ! -e '$U/state/update-rolled-back' ] && [ ! -e '$U/sys.old' ] && ! grep -q NIXENV '$U/calls'"
+printf 'previous=42\nattempts=1\nname=V2.1\n' > "$U/state/update-pending"
+up guard boot >/dev/null 2>&1
+check "a second boot without approval rolls back at once" bash -c "grep -q 'switch-generation 42' '$U/calls' && [ -e '$U/state/update-rolled-back' ]"
+check "the updater keeps its downloads out of /tmp" bash -c "! grep -q '\"/tmp/' '$ROOT/src/snapos.c' && [ -d '$U/state/work' ]"
+check "the guard runs at boot and after the desktop" bash -c "grep -q 'snapos guard boot' '$ROOT/nix/modules/snapos.nix' && grep -q 'snapos guard approve' '$ROOT/nix/modules/snapos.nix'"
+check "CI attaches the source package and its checksum to the release" bash -c "grep -q 'snapos-source.tar.gz.sha256' '$ROOT/.github/workflows/build-nixos-iso.yml'"
+check "snapupdate tells the user when an update was undone" grep -q 'update-rolled-back' "$ROOT/src/snapupdate.c"
+check "snapupdate runs at every login" grep -q 'Exec=snapupdate --autostart' "$ROOT/nix/modules/snapos.nix"
+check "snapupdate is built with SnapHelper" bash -c "grep -q 'bin/snapupdate' '$ROOT/nix/pkgs/snaphelper.nix' && grep -q 'snapupdate' '$ROOT/Makefile'"
+check "snapupdate is in the menu" grep -q '^Exec=snapupdate$' "$ROOT/branding/snapupdate.desktop"
+
+section "version"
+check "the repository has a VERSION file" bash -c "grep -qE '^[0-9]+\.[0-9]+$' '$ROOT/VERSION'"
+check "os-release names the SnapOS version" bash -c "grep -q 'PRETTY_NAME=\"SnapOS \${snaposVersion}\"' '$ROOT/nix/modules/snapos.nix' && grep -q 'ID_LIKE=nixos' '$ROOT/nix/modules/snapos.nix'"
+
+section "/etc/snapos"
+INSTALLER="$ROOT/nix/installer/snap-install-nixos.sh"
+check "the tools look in /etc/snapos first" bash -c "for f in snapos snapctl snap-deb snapconfig; do grep -q '\"/etc/snapos' '$ROOT/src/'\$f.c || exit 1; done"
+check "the installer writes the system to /etc/snapos" bash -c "grep -q 'path:/mnt/etc/snapos#snapos' '$INSTALLER' && ! grep -q 'cp -a /etc/snapos-src/. /mnt/etc/nixos' '$INSTALLER'"
+check "the installer links /etc/nixos and records the release" bash -c "grep -q 'ln -s snapos /mnt/etc/nixos' '$INSTALLER' && grep -q 'snapos-build /mnt/etc/snapos/release' '$INSTALLER'"
+check "the module links /etc/nixos to /etc/snapos" grep -q '"L /etc/nixos - - - - /etc/snapos"' "$ROOT/nix/modules/snapos.nix"
+check "the Debian layer gets Debian's updates" grep -q 'snap-deb upgrade' "$ROOT/src/snap-deb.c"
+check "the clamd socket survives a failed start" grep -q 'RuntimeDirectoryPreserve = "yes"' "$ROOT/nix/modules/snapos.nix"
+check "the boot does not wait for the virus database" bash -c "grep -q 'wants = mkForce \[ \];' '$ROOT/nix/modules/snapos.nix'"
 
 section "apt"
 out="$("$BIN/apt" install opsec 2>&1)"
@@ -332,11 +456,34 @@ check "SnapGuard ships the shield icons" grep -q 'snapguard-dark' "$ROOT/nix/pkg
 
 section "appearance (dark and light)"
 INST="$ROOT/nix/installer/snap-install-nixos.sh"
+check "installer shows Snappy with characters the console font has" python3 -c "
+import sys
+ok=set('▲█▒▼▶●┌┐┘└─┴■')
+for f in ['$ROOT/branding/snappy-console.txt']:
+    for ch in open(f, encoding='utf8').read():
+        if ord(ch) < 128 or ch in ok: continue
+        sys.exit(1)
+lines=[l for l in open('$INST', encoding='utf8') if 'intro_at 9 ' in l or 'intro_at 10 ' in l]
+for l in lines:
+    for ch in l:
+        if ord(ch) < 128 or ch in ok: continue
+        sys.exit(1)
+"
+check "installer uses the console Snappy" grep -q 'mascot-console.txt' "$INST"
+check "the installer image does not force wpa_supplicant off" bash -c "! grep -q 'networking.wireless.enable = lib.mkForce false' '$ROOT/nix/iso.nix'"
+check "the login screen has no corner logo" bash -c "! grep -q 'logo=' '$ROOT/nix/modules/snapos.nix'"
+check "the image ships the red icons and theme prebuilt" bash -c "grep -q 'isoImage.storeContents' '$ROOT/nix/iso.nix' && grep -q 'color = \"red\"' '$ROOT/nix/iso.nix'"
 check "installer asks for the appearance" grep -q '^choose_appearance$' "$INST"
+check "installer keeps the Wi-Fi network for the installed system" bash -c "grep -q '^keep_network()' '$INST' && grep -q 'system-connections' '$INST' && [ \$(grep -cE '^ *keep_network$' '$INST') -eq 2 ]"
+check "the updater waits for the network" grep -q 'nm-online' "$ROOT/src/snapos.c"
+check "installer waits for the Wi-Fi card to be ready" grep -q "wifi:unavailable" "$INST"
+check "installer explains itself when no Wi-Fi shows up" bash -c "grep -q '^wifi_report()' '$INST' && grep -q 'rfkill unblock all' '$INST' && grep -q 'for _try in 1 2 3' '$INST'"
+check "doctor reports the network hardware" grep -q "== network" "$ROOT/src/snapos.c"
 check "installer saves it in local.nix" grep -q 'snapos.appearance = "${LOOK}"' "$INST"
 steps="$(grep -oE '^ *step [0-9]+ ' "$INST" | grep -oE '[0-9]+' | sort -n | uniq | tr '\n' ' ')"
 check_eq "installer steps run from 1 to TOTAL" "1 2 3 4 5 6 7 8 9 10 " "$steps"
 check_eq "TOTAL matches the last step" "10" "$(sed -n 's/^TOTAL=//p' "$INST")"
+check "no media server shares the user's files on the network" grep -q 'services.gnome.rygel.enable = false' "$ROOT/nix/modules/snapos.nix"
 check "the module has the appearance option" grep -q 'appearance = mkOption' "$ROOT/nix/modules/snapos.nix"
 check "both wallpapers exist" bash -c "[ -f '$ROOT/branding/wallpapers/snapos-default.jpeg' ] && [ -f '$ROOT/branding/wallpapers/snapos-light.jpeg' ]"
 check "both shield icon sets exist" bash -c "[ -f '$ROOT/branding/icons/snapguard-dark-512.png' ] && [ -f '$ROOT/branding/icons/snapguard-light-512.png' ]"

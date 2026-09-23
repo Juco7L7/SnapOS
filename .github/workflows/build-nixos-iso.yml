@@ -28,8 +28,6 @@ jobs:
       - name: Install Nix (flakes)
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Free up disk space
         run: |
@@ -64,8 +62,11 @@ jobs:
         run: |
           cp result/iso/*.iso snapos-installer.iso
           sha256sum snapos-installer.iso > snapos-installer.iso.sha256
+          # the source package that `snapos update` installs, with its checksum
+          git archive --format=tar.gz --prefix=snapos/ -o snapos-source.tar.gz "$GITHUB_SHA"
+          sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256
           tag="${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-{0}', github.run_number) }}"
           gh release create "$tag" --draft --target "$GITHUB_SHA" \
             --title "SnapOS installer ${GITHUB_SHA::7}" \
             --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}. Flash with balenaEtcher." \
-            snapos-installer.iso snapos-installer.iso.sha256
+            snapos-installer.iso snapos-installer.iso.sha256 snapos-source.tar.gz snapos-source.tar.gz.sha256

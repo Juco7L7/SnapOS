@@ -21,7 +21,6 @@ let
 in
 (wrapFirefox firefox-unwrapped {
   pname = "snapweb";
-  desktopName = "SnapWeb";
   icon = "snapweb";
   wmClass = "snapweb";
 
@@ -85,6 +84,10 @@ in
       cp ${icons}/snapfox-$s.png "$d/snapweb.png"
     done
     ln -s "$out/bin/firefox" "$out/bin/snapweb"
+
+    # The menu entry is SnapWeb, not Firefox.
+    sed -i 's/^Name=.*/Name=SnapWeb/' "$out"/share/applications/*.desktop
+    grep -q '^Name=SnapWeb$' "$out"/share/applications/*.desktop
 
     # Firefox runs the autoconfig file in a sandbox without XPCOM unless this
     # is off. The red look and the new tab page both need XPCOM.

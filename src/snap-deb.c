@@ -59,6 +59,7 @@ typedef struct {
 static const char *nixdir(void) {
     const char *d = getenv("SNAPOS_NIX_DIR");
     if (d) return d;
+    if (access("/etc/snapos/configuration.nix", F_OK) == 0) return "/etc/snapos";
     if (access("/etc/nixos/configuration.nix", F_OK) == 0) return "/etc/nixos";
     return "nix";
 }
@@ -512,7 +513,7 @@ static int in_layer_root(char *const cmd[]) {
     char r[PATH_MAX], debs[PATH_MAX];
     rootfs(r, sizeof r);
     debs_dir(debs, sizeof debs);
-    char *argv[64];
+    char *argv[96];
     int k = 0;
     argv[k++] = (char *)bwrap();
     argv[k++] = "--bind"; argv[k++] = r; argv[k++] = "/";
@@ -523,8 +524,15 @@ static int in_layer_root(char *const cmd[]) {
     argv[k++] = "--tmpfs"; argv[k++] = "/run";
     argv[k++] = "--ro-bind-try"; argv[k++] = "/etc/resolv.conf"; argv[k++] = "/etc/resolv.conf";
     if (is_dir(debs)) { argv[k++] = "--ro-bind"; argv[k++] = debs; argv[k++] = DEBS_MOUNT; }
-    /* dpkg changes owners and modes; bwrap drops those powers unless asked. */
-    argv[k++] = "--cap-add"; argv[k++] = "ALL";
+    /* dpkg changes owners, modes and file capabilities, and apt drops to its
+     * own user: those powers are granted, and nothing else. No SYS_ADMIN and
+     * no MKNOD, so an install script cannot mount, make device nodes or enter
+     * the host's namespaces; its own pid, ipc and uts namespaces on top. */
+    static const char *caps[] = { "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER",
+                                  "CAP_FSETID", "CAP_SETUID", "CAP_SETGID", "CAP_SETFCAP",
+                                  "CAP_SYS_CHROOT", "CAP_KILL", NULL };
+    for (int i = 0; caps[i]; i++) { argv[k++] = "--cap-add"; argv[k++] = (char *)caps[i]; }
+    argv[k++] = "--unshare-pid"; argv[k++] = "--unshare-ipc"; argv[k++] = "--unshare-uts";
     argv[k++] = "--clearenv";
     argv[k++] = "--setenv"; argv[k++] = "PATH"; argv[k++] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     argv[k++] = "--setenv"; argv[k++] = "HOME"; argv[k++] = "/root";
@@ -533,7 +541,7 @@ static int in_layer_root(char *const cmd[]) {
     argv[k++] = "--setenv"; argv[k++] = "APT_LISTCHANGES_FRONTEND"; argv[k++] = "none";
     argv[k++] = "--die-with-parent";
     argv[k++] = "--";
-    for (int i = 0; cmd[i] && k < 62; i++) argv[k++] = cmd[i];
+    for (int i = 0; cmd[i] && k < 94; i++) argv[k++] = cmd[i];
     argv[k] = NULL;
     return run(argv);
 }
@@ -903,6 +911,22 @@ static int cmd_run(int argc, char **argv) {
 
 /* ---- the small commands ------------------------------------------------ */
 
+/* Debian's security updates for the layer. Run by `snapos update`. */
+static int cmd_upgrade(void) {
+    if (!layer_ready()) { printf("  %sno Debian layer yet%s\n", DIM, RST); return 0; }
+    if (!configure_layer()) return 1;
+    printf("  %sUpdating the Debian layer...%s\n", DIM, RST);
+    char *upd[] = { "apt-get", "-q", "update", NULL };
+    if (in_layer_root(upd) != 0) { fprintf(stderr, "snap-deb: apt-get update failed; is the network up?\n"); return 1; }
+    char *up[] = { "apt-get", "-q", "upgrade", "-y", NULL };
+    if (in_layer_root(up) != 0) return 1;
+    char *cl[] = { "apt-get", "clean", NULL };
+    in_layer_root(cl);
+    do_export();
+    printf("  %s✓ Debian layer up to date%s\n", GRN, RST);
+    return 0;
+}
+
 static int cmd_status(void) {
     char p[PATH_MAX], ver[64] = "";
     pathf(p, sizeof p, "%s/rootfs/etc/debian_version", layer());
@@ -1062,6 +1086,7 @@ static void usage(FILE *f) {
         "  snap-deb list              declared packages and whether they are installed\n"
         "  snap-deb remove NAME       take one out again\n"
         "  snap-deb sync              install what is declared (snapos rebuild does this)\n"
+        "  snap-deb upgrade           Debian's updates for the layer (snapos update does this)\n"
         "  snap-deb run CMD [ARGS]    start a program from the Debian layer\n"
         "  snap-deb shell             a shell inside the Debian layer\n"
         "  snap-deb status            the state of the Debian layer\n\n"
@@ -1090,8 +1115,9 @@ int main(int argc, char **argv) {
         char *sh[] = { "bash", "-l", NULL };
         return cmd_run(2, sh);
     }
-    if (!strcmp(argv[1], "sync") || !strcmp(argv[1], "export")) {
+    if (!strcmp(argv[1], "sync") || !strcmp(argv[1], "export") || !strcmp(argv[1], "upgrade")) {
         if (needs_root()) { reexec_with_sudo(argc, argv); return 1; }
+        if (!strcmp(argv[1], "upgrade")) return cmd_upgrade();
         return !strcmp(argv[1], "sync") ? cmd_sync() : do_export();
     }
     if (!is_tty()) {

@@ -48,7 +48,12 @@ Programs from `.deb` files run inside a Debian layer (`/var/lib/snapdeb`,
 `/tmp` and `/run` are private, the environment starts empty, and the program
 gets the user's home, display, sound and D-Bus sockets. This is a compatibility
 layer, not a sandbox: a program in the layer can read and write the user's
-files exactly like a native one. The layer itself is created with Debian's
+files exactly like a native one. Installing a `.deb` runs its maintainer
+scripts as root inside the layer, as on Debian, which is why SnapGuard scans
+every `.deb` first; that root runs with only the capabilities dpkg needs (no
+`SYS_ADMIN`, no `MKNOD`) and in its own pid, ipc and uts namespaces, so an
+install script cannot mount, create device nodes or enter the host's
+namespaces. The layer itself is created with Debian's
 `debootstrap` against Debian's archive keys, which SnapOS ships in
 `/etc/snapos/debian-archive-keyring.gpg` (from the `debian-archive-keyring`
 package; without it no layer is created), and packages are
@@ -68,9 +73,40 @@ the time taken, and sends a desktop notification.
 
 ## Not done yet
 
-- Real-time watching of Downloads and USB drives.
+- Real-time watching of Downloads and USB drives (planned for the next release).
 - Talking to `clamd` over its socket protocol instead of running `clamdscan`.
 - Sandboxing for programs that are not trusted yet.
+
+## Updates
+
+`snapos update` (`src/snapos.c`) never replaces the running system. It checks
+the machine and the release first, verifies the SHA-256 of the source package
+against the checksum attached to the release (both come from the release
+page over HTTPS, so this catches a corrupted download, not a compromised
+release), builds the new NixOS generation with `nixos-rebuild boot`, and
+leaves a marker in `/var/lib/snapos/update`. At boot `snapos guard boot` lets
+a new generation start once; `snapos guard approve` removes the marker when a
+user with uid ≥ 1000 has logged in, and after ten minutes without a login, or
+on the next boot with the marker still there, switches the profile back to the
+recorded generation, restores the previous `/etc/snapos`, and restarts. Only
+root writes the markers; users only read them. Downloads go to
+`/var/lib/snapos/update/work`, a folder only root can enter, never to `/tmp`.
+
+## Advisories
+
+- **V1 and V1.1 (NixOS 24.11, Linux 6.6.94).** The base stopped receiving
+  security fixes on 30 June 2025; kernel vulnerabilities found since then,
+  including local privilege escalations, are unpatched in those releases.
+  Fixed by V2.0, which moves to NixOS 26.05 (Linux 6.18) and updates itself.
+- **V1.1 Debian layer.** `snap-deb sync` ran a package's install scripts as
+  root with all capabilities and without a pid namespace, so a malicious
+  `.deb` could mount devices or enter the host's namespaces and leave the
+  layer. Fixed in V2.0: only the capabilities dpkg needs, own pid, ipc and uts
+  namespaces.
+- Found and fixed during the V2.0 review, never released: the updater wrote
+  its downloads to `/tmp` under predictable names as root (a local user could
+  plant a symbolic link there); file names reached desktop notifications as
+  markup.
 
 ## Threat model
 

@@ -3,7 +3,8 @@ set -uo pipefail
 
 ACC=$'\033[91m'; GRN=$'\033[32m'; YEL=$'\033[33m'
 BLD=$'\033[1m'; DIM=$'\033[2m'; RST=$'\033[0m'
-MASCOT="/etc/snapos/mascot.txt"
+MASCOT="/etc/snapos/mascot-console.txt"
+[ -r "$MASCOT" ] || MASCOT="/etc/snapos/mascot.txt"
 BUILD_ID="$(cat /etc/snapos-build 2>/dev/null || echo "?")"
 TOTAL=10
 STEP=0
@@ -88,6 +89,8 @@ EN[net_retry]="Press Enter to try again."
 PT[net_retry]="Enter para tentar de novo."
 EN[net_none]="No Wi-Fi networks found."
 PT[net_none]="Nenhuma rede Wi-Fi encontrada."
+EN[net_report]="Wi-Fi hardware report (take a photo of this if Wi-Fi never shows up):"
+PT[net_report]="Relatorio do hardware Wi-Fi (tire uma foto disto se o Wi-Fi nunca aparecer):"
 EN[net_cable]="Press Enter to search again, or type 'cable' if you plugged one in: "
 PT[net_cable]="Enter para procurar de novo, ou digite 'cabo' se conectou um cabo: "
 EN[net_list]="Wi-Fi networks"
@@ -241,8 +244,8 @@ intro_text() {
     intro_at 10 "$(printf '%-26s' '')"
     intro_at 11 "${GRN}✓${RST} ${BLD}$(printf '%-24s' "$(t intro_done)")${RST}"
     # Snappy is happy
-    intro_at 9 "${ACC}    ▐    ╭╮  ^      ^  ╭╮    ▌${RST}" 3
-    intro_at 10 "${ACC}     ╲       ╲ ╲▽▽▽▽╱ ╱       ╱${RST}" 3
+    intro_at 9 "${ACC}    █    ┌┐  ^      ^  ┌┐    █${RST}" 3
+    intro_at 10 "${ACC}     \\       \\ \\▼▼▼▼/ /       /${RST}" 3
     intro_pause 0.6
     printf '\033[14;1H'
 }
@@ -310,10 +313,29 @@ choose_graphics() {
     esac
 }
 
+# The network chosen here is kept, so the installed system connects to it by
+# itself and updates can download right away.
+keep_network() {
+    local d=/mnt/etc/NetworkManager/system-connections f
+    ls /etc/NetworkManager/system-connections/*.nmconnection >/dev/null 2>&1 || return 0
+    mkdir -p "$d"
+    for f in /etc/NetworkManager/system-connections/*.nmconnection; do
+        install -m 600 -o root -g root "$f" "$d/$(basename "$f")"
+    done
+}
+
+# /etc/nixos points at /etc/snapos, so NixOS tools find the system too. The
+# release file records the build this system came from, for `snapos update`.
+link_nixos() {
+    rm -rf /mnt/etc/nixos
+    ln -s snapos /mnt/etc/nixos
+    cp /etc/snapos-build /mnt/etc/snapos/release 2>/dev/null || true
+}
+
 write_graphics() {
     case "$GFXMODE" in
-        intel) printf '{ ... }: {\n  boot.blacklistedKernelModules = [ "nouveau" "nvidia" "radeon" "amdgpu" ];\n}\n' > /mnt/etc/nixos/graphics.nix ;;
-        *)     printf '{ ... }: { }\n' > /mnt/etc/nixos/graphics.nix ;;
+        intel) printf '{ ... }: {\n  boot.blacklistedKernelModules = [ "nouveau" "nvidia" "radeon" "amdgpu" ];\n}\n' > /mnt/etc/snapos/graphics.nix ;;
+        *)     printf '{ ... }: { }\n' > /mnt/etc/snapos/graphics.nix ;;
     esac
 }
 
@@ -328,19 +350,25 @@ update_system() {
     say "$(t i_copy)..."
     STEP=0
     choose_graphics
-    mkdir -p /mnt/etc/nixos /tmp/snapos-keep
+    # older installs keep the system in /etc/nixos; it moves to /etc/snapos
+    if [ -d /mnt/etc/nixos ] && [ ! -L /mnt/etc/nixos ] && [ ! -d /mnt/etc/snapos ]; then
+        mv /mnt/etc/nixos /mnt/etc/snapos
+    fi
+    mkdir -p /mnt/etc/snapos /tmp/snapos-keep
     for f in hardware-configuration.nix local.nix; do
-        [ -e "/mnt/etc/nixos/$f" ] && cp -a "/mnt/etc/nixos/$f" "/tmp/snapos-keep/$f"
+        [ -e "/mnt/etc/snapos/$f" ] && cp -a "/mnt/etc/snapos/$f" "/tmp/snapos-keep/$f"
     done
-    [ -e /mnt/etc/nixos/configuration.nix ] && cp -a /mnt/etc/nixos/configuration.nix /mnt/etc/nixos/configuration.nix.bak
-    cp -a /etc/snapos-src/. /mnt/etc/nixos/
+    [ -e /mnt/etc/snapos/configuration.nix ] && cp -a /mnt/etc/snapos/configuration.nix /mnt/etc/snapos/configuration.nix.bak
+    cp -a /etc/snapos-src/. /mnt/etc/snapos/
     for f in hardware-configuration.nix local.nix; do
-        [ -e "/tmp/snapos-keep/$f" ] && cp -a "/tmp/snapos-keep/$f" "/mnt/etc/nixos/$f"
+        [ -e "/tmp/snapos-keep/$f" ] && cp -a "/tmp/snapos-keep/$f" "/mnt/etc/snapos/$f"
     done
     write_graphics
+    link_nixos
+    keep_network
     say "$(t u_bak)"
     printf '\n  %s%s%s\n\n' "$BLD" "$(t i_run)" "$RST"
-    LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/nixos#snapos" --no-root-passwd \
+    LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#snapos" --no-root-passwd \
         || die "$(t f_install)"
     printf '\n'
     ok "${BLD}$(t done_title)${RST}"
@@ -409,6 +437,18 @@ askpass() {
 
 is_online() { curl -fsS -m 5 -o /dev/null https://api.github.com 2>/dev/null; }
 
+# When no network shows up, the screen says why: the card, its driver, radio
+# blocks and firmware messages. A photo of this is enough to fix the image.
+wifi_report() {
+    printf '\n  %s%s%s\n' "$DIM" "$(t net_report)" "$RST"
+    lspci -nnk 2>/dev/null | grep -A3 -iE 'network|wireless' | sed 's/^/    /'
+    printf '    --\n'
+    nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | sed 's/^/    /'
+    rfkill list 2>/dev/null | grep -iE 'wireless|blocked' | sed 's/^/    /'
+    dmesg 2>/dev/null | grep -iE 'firmware|wlan|iwl|ath[0-9]|brcm|rtw|mt76' | tail -6 | cut -c1-90 | sed 's/^/    /'
+    printf '\n'
+}
+
 network_connect() {
     local -a nets
     local r choice i n SSID WIFIPASS
@@ -421,12 +461,26 @@ network_connect() {
         say "$(t net_retry)"; read -r _
         network_connect; return $?
     fi
+    systemctl start NetworkManager >/dev/null 2>&1 || true
+    rfkill unblock all >/dev/null 2>&1 || true
     nmcli radio wifi on >/dev/null 2>&1
+    # right after boot the Wi-Fi card can still be loading its firmware
+    for _wait in $(seq 1 20); do
+        if nmcli -t -f TYPE,STATE device 2>/dev/null | grep -q '^wifi:' &&
+           ! nmcli -t -f TYPE,STATE device 2>/dev/null | grep -q '^wifi:unavailable'; then break; fi
+        sleep 1
+    done
     sleep 2
     while true; do
-        mapfile -t nets < <(nmcli -t -f SSID dev wifi list --rescan yes 2>/dev/null | awk -F: 'NF && $1!="" ' | sort -u)
+        # a fresh driver can need more than one scan before it reports anything
+        for _try in 1 2 3; do
+            mapfile -t nets < <(nmcli -t -f SSID dev wifi list --rescan yes 2>/dev/null | awk -F: 'NF && $1!="" ' | sort -u)
+            [ "${#nets[@]}" -gt 0 ] && break
+            sleep 3
+        done
         if [ "${#nets[@]}" -eq 0 ]; then
             warn "$(t net_none)"
+            wifi_report
             printf '  %s' "$(t net_cable)"
             read -r r
             if [ "$r" = "cable" ] || [ "$r" = "cabo" ]; then
@@ -589,10 +643,12 @@ say "$(t i_hw)..."
 nixos-generate-config --root /mnt || die "$(t f_hw)"
 
 say "$(t i_copy)..."
-mkdir -p /mnt/etc/nixos
-cp -a /etc/snapos-src/. /mnt/etc/nixos/
+mkdir -p /mnt/etc/snapos
+mv /mnt/etc/nixos/hardware-configuration.nix /mnt/etc/snapos/
+cp -a /etc/snapos-src/. /mnt/etc/snapos/
+link_nixos
 
-cat > /mnt/etc/nixos/local.nix <<EOF
+cat > /mnt/etc/snapos/local.nix <<EOF
 { ... }: {
   networking.hostName = "${HOSTNAME}";
   time.timeZone = "${TIMEZONE}";
@@ -610,9 +666,10 @@ cat > /mnt/etc/nixos/local.nix <<EOF
 }
 EOF
 write_graphics
+keep_network
 
 printf '\n  %s%s%s\n\n' "$BLD" "$(t i_run)" "$RST"
-LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/nixos#snapos" --no-root-passwd \
+LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#snapos" --no-root-passwd \
     || die "$(t f_install)"
 
 say "$(t i_pw "$USERNAME")..."

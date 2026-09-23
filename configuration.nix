@@ -70,7 +70,7 @@
 
   # This value describes the release this system was first installed with.
   # Do not change it when upgrading. See `man configuration.nix` for details.
-  system.stateVersion = "24.11";
+  system.stateVersion = "26.05";
 
   # Installed programs. Add a name to the list and run `snapos rebuild`, or
   # let `snapctl save` manage this list for you.

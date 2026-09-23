@@ -1,8 +1,8 @@
 { stdenv, pkg-config, wrapGAppsHook3, gtk3, src }:
 
-# SnapHelper: the tour with three animations. It opens by itself once per user
-# (see the autostart entry in modules/snapos.nix) and can be opened again from
-# the menu.
+# SnapHelper, the tour with three animations, and snapupdate, the login check
+# for a newer release. Both open by themselves (autostart entries in
+# modules/snapos.nix) and are in the menu.
 stdenv.mkDerivation {
   pname = "snaphelper";
   version = "0.1";
@@ -13,13 +13,15 @@ stdenv.mkDerivation {
 
   buildPhase = ''
     runHook preBuild
-    make bin/snaphelper
+    make bin/snaphelper bin/snapupdate
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
     install -Dm755 bin/snaphelper $out/bin/snaphelper
+    install -Dm755 bin/snapupdate $out/bin/snapupdate
+    install -Dm644 branding/snapupdate.desktop $out/share/applications/snapupdate.desktop
     for g in snappy-declares snappy-deb snappy-defends; do
       install -Dm644 branding/$g.gif $out/share/snapos/helper/$g.gif
     done

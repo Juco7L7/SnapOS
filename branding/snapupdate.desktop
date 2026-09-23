@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=SnapOS Update
+Comment=Check for and install the latest SnapOS release
+Exec=snapupdate
+Icon=snapos
+Terminal=false
+Categories=System;Settings;

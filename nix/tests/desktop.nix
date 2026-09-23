@@ -51,6 +51,22 @@ let
         machine.succeed("test -s /run/current-system/sw/share/snapos/helper/snappy-declares.gif")
         machine.succeed("snapos help")
         machine.succeed("snapguard status")
+
+        # The update guard: a new system is approved once a user has logged in
+        # (tester is logged in by autologin), and a system that never got
+        # approved is undone at the next boot.
+        machine.succeed("systemctl is-enabled snapos-update-guard snapos-update-approve")
+        machine.succeed("printf 'previous=1\\nattempts=0\\nname=test-release\\n' > /var/lib/snapos/update/update-pending")
+        machine.succeed("systemctl restart snapos-update-guard")
+        machine.succeed("grep -q '^attempts=1' /var/lib/snapos/update/update-pending")
+        machine.succeed("systemctl restart snapos-update-approve")
+        machine.wait_until_succeeds("test ! -e /var/lib/snapos/update/update-pending", timeout=120)
+        machine.succeed("printf 'previous=1\\nattempts=1\\nname=test-release\\n' > /var/lib/snapos/update/update-pending")
+        machine.succeed("SNAPOS_GUARD_NO_REBOOT=1 snapos guard boot")
+        machine.succeed("test ! -e /var/lib/snapos/update/update-pending")
+        machine.succeed("grep -q test-release /var/lib/snapos/update/update-rolled-back")
+        # (a test VM has no system profile generations, so the switch itself is
+        # covered by tests/run.sh with a stand-in profile)
       '';
     };
   # The VM has no internet, so ClamAV gets a tiny signature database written by

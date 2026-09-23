@@ -11,12 +11,15 @@ BINS     = $(addprefix $(BIN)/,$(TOOLS))
 
 all: $(BINS)
 
-gui: $(BIN)/snapguard-gui $(BIN)/snaphelper
+gui: $(BIN)/snapguard-gui $(BIN)/snaphelper $(BIN)/snapupdate
 
 $(BIN)/snapguard-gui: src/snapguard-gui.c | $(BIN)
 	$(CC) $(GUICFLAGS) -o $@ $< $$($(PKG_CONFIG) --cflags gtk+-3.0) $(LDFLAGS) $$($(PKG_CONFIG) --libs gtk+-3.0) -lm
 
 $(BIN)/snaphelper: src/snaphelper.c | $(BIN)
+	$(CC) $(GUICFLAGS) -o $@ $< $$($(PKG_CONFIG) --cflags gtk+-3.0) $(LDFLAGS) $$($(PKG_CONFIG) --libs gtk+-3.0)
+
+$(BIN)/snapupdate: src/snapupdate.c | $(BIN)
 	$(CC) $(GUICFLAGS) -o $@ $< $$($(PKG_CONFIG) --cflags gtk+-3.0) $(LDFLAGS) $$($(PKG_CONFIG) --libs gtk+-3.0)
 
 $(BIN)/%: src/%.c | $(BIN)

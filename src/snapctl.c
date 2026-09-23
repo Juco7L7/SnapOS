@@ -11,6 +11,7 @@
 static const char *nixdir(void) {
     const char *d = getenv("SNAPOS_NIX_DIR");
     if (d) return d;
+    if (access("/etc/snapos/configuration.nix", F_OK) == 0) return "/etc/snapos";
     if (access("/etc/nixos/configuration.nix", F_OK) == 0) return "/etc/nixos";
     return "nix";
 }

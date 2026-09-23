@@ -45,10 +45,13 @@ let
     done
   '';
 
-  # Every .deb that `snap-deb` declared sits in /etc/nixos/debs. `snap-deb sync`
+  # Every .deb that `snap-deb` declared sits in /etc/snapos/debs. `snap-deb sync`
   # installs them in a Debian layer under /var/lib/snapdeb and exports their
   # menu entries and commands from there.
   debLayer = "/var/lib/snapdeb";
+
+  # The SnapOS release this tree is (the VERSION file at the repository root).
+  snaposVersion = lib.strings.trim (builtins.readFile ../../VERSION);
 in {
   options.snapos = {
     desktop = mkOption {
@@ -71,15 +74,62 @@ in {
     system.nixos.distroName = "SnapOS";
     networking.hostName = mkDefault "snapos";
 
+    # os-release names the SnapOS release, not the NixOS one: fastfetch and
+    # `snapos version` show "SnapOS 2.0", and updates compare this number.
+    environment.etc."os-release".text = mkForce ''
+      NAME="SnapOS"
+      ID=snapos
+      ID_LIKE=nixos
+      VERSION="${snaposVersion}"
+      VERSION_ID="${snaposVersion}"
+      PRETTY_NAME="SnapOS ${snaposVersion}"
+      BUILD_ID="${config.system.nixos.version}"
+      HOME_URL="https://github.com/Juco7L7/SnapOS"
+      SUPPORT_URL="https://github.com/Juco7L7/SnapOS/issues"
+      LOGO=snapos
+    '';
+    environment.etc."snapos/version".text = snaposVersion;
+
     services.xserver.enable = true;
-    services.xserver.desktopManager.budgie.enable = true;
+    services.desktopManager.budgie.enable = true;
     services.xserver.displayManager.lightdm.enable = true;
-    services.xserver.desktopManager.gnome.enable = mkForce false;
-    services.xserver.desktopManager.plasma5.enable = mkForce false;
+    services.desktopManager.gnome.enable = mkForce false;
     services.desktopManager.plasma6.enable = mkForce false;
+    # Budgie turns on Rygel, a DLNA media server that shares the user's music,
+    # videos and photos with other devices on the network. Not on SnapOS.
+    services.gnome.rygel.enable = false;
 
     environment.etc."snapos/theme".text = cfg.theme;
     environment.etc."snapos/appearance".text = cfg.appearance;
+
+    # An update is only made the default for the next boot. At boot the guard
+    # lets a new system start once; it is approved when a normal user logs in,
+    # and undone (back to the previous generation) if that never happens.
+    systemd.services.snapos-update-guard = {
+      description = "SnapOS update guard: undo an update that did not come up";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "display-manager.service" ];
+      after = [ "local-fs.target" ];
+      path = [ config.nix.package pkgs.systemd pkgs.coreutils ];
+      serviceConfig = { Type = "oneshot"; ExecStart = "${pkgs.snapos-tools}/bin/snapos guard boot"; };
+    };
+    systemd.services.snapos-update-approve = {
+      description = "SnapOS update guard: approve the new system once someone logs in";
+      wantedBy = [ "graphical.target" ];
+      after = [ "display-manager.service" ];
+      path = [ config.nix.package pkgs.systemd pkgs.coreutils ];
+      serviceConfig = { Type = "simple"; ExecStart = "${pkgs.snapos-tools}/bin/snapos guard approve"; };
+    };
+
+    # At every login, snapupdate asks GitHub for a newer release and offers it.
+    environment.etc."xdg/autostart/snapupdate.desktop".text = ''
+      [Desktop Entry]
+      Type=Application
+      Name=SnapOS Update
+      Exec=snapupdate --autostart
+      Terminal=false
+      X-GNOME-Autostart-enabled=true
+    '';
 
     # SnapHelper opens once, the first time each user logs in.
     environment.etc."xdg/autostart/snaphelper.desktop".text = ''
@@ -114,7 +164,7 @@ in {
     environment.systemPackages =
       optionals config.services.xserver.enable ([ redTheme redIcons (hiPrio shieldIcons) ] ++ optional light lightTheme)
       ++ optional config.services.xserver.enable pkgs.snaphelper
-      ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg ];
+      ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg pkgs.libnotify ];
 
     # Programs from the Debian layer show up in the menu and on the PATH.
     environment.sessionVariables.XDG_DATA_DIRS = [ "${debLayer}/exports/share" ];
@@ -134,8 +184,15 @@ in {
     # The first signature download needs the network. If it is not there yet,
     # try again instead of leaving the defender off until the next reboot.
     systemd.services.clamav-daemon = mkIf (cfg.security.antivirus == "snapguard") {
-      serviceConfig = { Restart = "on-failure"; RestartSec = "60s"; };
+      # If the daemon fails (no database yet), systemd would remove /run/clamav
+      # and with it the socket file that clamd is reached through.
+      serviceConfig = { Restart = "on-failure"; RestartSec = "60s"; RuntimeDirectoryPreserve = "yes"; };
       unitConfig.StartLimitIntervalSec = 0;
+      # NixOS makes the daemon wait for freshclam, so the boot would wait for the
+      # signature download. The daemon starts on its own and retries until the
+      # timer below has fetched the database.
+      after = mkForce [ "clamav-daemon.socket" ];
+      wants = mkForce [ ];
     };
     systemd.timers.clamav-freshclam.timerConfig = mkIf (cfg.security.antivirus == "snapguard") {
       OnBootSec = "2min";
@@ -148,11 +205,17 @@ in {
       "f /etc/snapos/allow.txt 0644 root root -"
       "d /var/lib/snapos 0750 root root -"
       "d ${debLayer} 0755 root root -"
+      "d /var/lib/snapos/update 0755 root root -"
+      # The system lives in /etc/snapos; the NixOS path keeps working through a link.
+      "L /etc/nixos - - - - /etc/snapos"
     ];
 
     environment.etc."snapos/fastfetch.jsonc".source = ../../branding/fastfetch/config.jsonc;
     environment.etc."snapos/logo.txt".source        = ../../branding/fastfetch/snapos-logo.txt;
     environment.etc."snapos/mascot.txt".source      = ../../branding/snappy-mascot.txt;
+    # The same Snappy drawn with the characters the Linux console font has
+    # (the installer runs on the console, which cannot draw the terminal one).
+    environment.etc."snapos/mascot-console.txt".source = ../../branding/snappy-console.txt;
 
     boot.plymouth.enable = false;
 
@@ -164,9 +227,6 @@ in {
     services.xserver.displayManager.lightdm.greeters.slick = {
       theme = { name = gtkTheme; package = gtkPackage; };
       iconTheme = { name = iconName; package = redIcons; };
-      extraConfig = ''
-        logo=${../../branding/icons/snapos-96.png}
-      '';
     };
 
     xdg.mime.defaultApplications = {
@@ -182,7 +242,7 @@ in {
 
     # The dock: 45 pixels high, with the defender, the browser, the programs
     # store and the terminal pinned. (NixOS pins a media player by default.)
-    services.xserver.desktopManager.budgie.extraGSettingsOverrides = ''
+    services.desktopManager.budgie.extraGSettingsOverrides = ''
       [com.solus-project.icon-tasklist:Budgie]
       pinned-launchers=["snapguard.desktop", "firefox.desktop", "org.gnome.Software.desktop", "org.gnome.Terminal.desktop"]
 
@@ -239,7 +299,7 @@ in {
 
     hardware.enableRedistributableFirmware = true;
     hardware.graphics.enable = mkIf config.services.xserver.enable true;
-    hardware.pulseaudio.enable = mkIf config.services.xserver.enable (mkForce false);
+    services.pulseaudio.enable = false;
     security.rtkit.enable = mkIf config.services.xserver.enable true;
     services.pipewire = mkIf config.services.xserver.enable {
       enable = true;

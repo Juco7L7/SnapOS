@@ -7,7 +7,7 @@
   ];
 
   services.xserver.enable = lib.mkForce false;
-  services.xserver.desktopManager.budgie.enable = lib.mkForce false;
+  services.desktopManager.budgie.enable = lib.mkForce false;
   services.xserver.displayManager.lightdm.enable = lib.mkForce false;
 
   environment.systemPackages = with pkgs; [
@@ -17,7 +17,9 @@
     pciutils
   ];
 
-  networking.wireless.enable = lib.mkForce false;
+  # NetworkManager brings its own wpa_supplicant (controlled over D-Bus);
+  # forcing networking.wireless off here would take it away and leave every
+  # Wi-Fi card "unavailable" in the installer.
   networking.networkmanager.enable = true;
 
   i18n.supportedLocales = [ "all" ];
@@ -66,9 +68,18 @@
     MENU COLOR SEL          7;37;40    #FFFFFFFF    #FFE12A1C   std
   '';
 
+  # The red Papirus icons and the red Colloid theme are SnapOS variants, so no
+  # public cache has them and the installer would build them on the laptop,
+  # which is the slowest part of the install. They ship inside the image.
+  isoImage.storeContents =
+    let p = self.nixosConfigurations.snapos.pkgs; in [
+      (p.papirus-icon-theme.override { color = "red"; })
+      (p.colloid-gtk-theme.override { themeVariants = [ "red" ]; colorVariants = [ "light" "dark" ]; })
+    ];
+
   isoImage.isoName = lib.mkForce "snapos-installer.iso";
   isoImage.volumeID = lib.mkForce "SNAPOS_INSTALL";
   isoImage.appendToMenuLabel = " SnapOS Installer";
 
-  system.stateVersion = "24.11";
+  system.stateVersion = "26.05";
 }
