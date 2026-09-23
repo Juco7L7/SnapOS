@@ -233,6 +233,11 @@ SnapGuard combines ClamAV, a SnapOS hash list and a trust list. When a scan
 finds a threat, the file is moved to quarantine and its execute bits are
 removed. You then choose to **keep and trust** it or **delete** it.
 
+It works in real time: from the moment you log in, every file that lands in
+`Downloads` is scanned as soon as it is complete, and a USB drive is scanned
+when you plug it in. A threat is contained at once and a notification tells
+you; a clean file is left alone. `snapguard status` shows whether real-time
+protection is on.
 
 The window offers a quick scan of Downloads, folder and file scans and a
 quarantine view. While it scans it shows each file as it is checked, and when

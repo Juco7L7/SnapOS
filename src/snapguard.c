@@ -452,6 +452,15 @@ static void cmd_status(void) {
     else             printf("  virus database: %sMISSING in %s (downloads on first boot with internet)%s\n", YEL, clam_db_dir(), R);
     if (bin && dbfiles > 0) printf("  protection    : %sACTIVE%s (ClamAV and SnapOS signatures)\n", GRN, R);
     else                    printf("  protection    : %sLIMITED%s (SnapOS signatures only)\n", YEL, R);
+    char pidfile[512];
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (rt && *rt) snprintf(pidfile, sizeof pidfile, "%s/snapguard-watch.pid", rt);
+    else snprintf(pidfile, sizeof pidfile, "/tmp/snapguard-watch-%d.pid", (int)getuid());
+    int watching = 0;
+    FILE *pf = fopen(pidfile, "r");
+    if (pf) { int pid = 0; if (fscanf(pf, "%d", &pid) == 1 && pid > 0 && kill(pid, 0) == 0) watching = 1; fclose(pf); }
+    if (watching) printf("  real-time     : %son%s (new files in Downloads and on USB drives are scanned)\n", GRN, R);
+    else          printf("  real-time     : %soff%s (snapguard-watch starts at login)\n", YEL, R);
     printf("  signatures    : %s\n", sigs);
     printf("  allowlist     : %s\n", allow);
     printf("  quarantine    : %s\n", quarantine);

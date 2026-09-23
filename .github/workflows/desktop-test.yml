@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths: [ "flake.nix", "flake.lock", "configuration.nix", "nix/**", "branding/**" ]
+    paths: [ "VERSION", "flake.nix", "flake.lock", "configuration.nix", "nix/**", "branding/**" ]
 
 permissions:
   contents: read

@@ -112,6 +112,45 @@ out="$(env -u DISPLAY -u WAYLAND_DISPLAY PATH="$TMP/gui:$PATH" "$G" 2>&1)"
 check "without a graphical session it prints the help" bash -c "printf '%s' \"\$1\" | grep -q 'snapguard scan'" _ "$out"
 unset SNAP_GUARD_SIGS
 
+section "snapguard-watch (real time)"
+W="$TMP/watch"
+mkdir -p "$W/dir" "$W/rt" "$W/q"
+printf '#!/bin/sh\nprintf "%%s|" "$@" >> "%s/notified"; echo >> "%s/notified"\n' "$W" "$W" > "$W/fakenotify"
+chmod +x "$W/fakenotify"
+env PATH="$BIN:$PATH" SNAP_GUARD_SIGS="$ROOT/security/signatures.txt" SNAP_GUARD_ALLOW="$W/noallow" SNAP_GUARD_QUARANTINE="$W/q" \
+    SNAPGUARD_WATCH_NOTIFY="$W/fakenotify" SNAPGUARD_WATCH_SETTLE=100 XDG_RUNTIME_DIR="$W/rt" SNAPOS_ONINFECTED=contain \
+    "$BIN/snapguard-watch" "$W/dir" 2>/dev/null &
+WPID=$!
+sleep 1
+check "the watcher writes its pid file" bash -c "[ \"\$(cat '$W/rt/snapguard-watch.pid')\" = '$WPID' ]"
+out="$(XDG_RUNTIME_DIR="$W/rt" "$G" status 2>&1)"
+check "status shows real-time on while it runs" bash -c "printf '%s' \"\$1\" | grep -q 'real-time     : .*on'" _ "$out"
+printf '%s' "$EICAR" > "$W/dir/dropped.bin"
+for i in $(seq 1 50); do [ ! -e "$W/dir/dropped.bin" ] && break; sleep 0.2; done
+check "a new threat in a watched folder is contained" bash -c "[ ! -e '$W/dir/dropped.bin' ] && ls '$W/q' | grep -q dropped.bin"
+check "and the desktop is told" bash -c "grep -q 'Threat contained' '$W/notified'"
+echo "plain" > "$W/dir/fine.txt"
+sleep 1
+check "a clean file stays and is not called a threat" bash -c "[ -e '$W/dir/fine.txt' ] && ! grep -q 'Threat.*fine.txt' '$W/notified'"
+printf '%s' "$EICAR" > "$W/dir/partial.part"
+sleep 1
+check "temporary download names are left alone" test -e "$W/dir/partial.part"
+printf '%s' "$EICAR" > "$W/dir/a<b>&c.bin"
+for i in $(seq 1 50); do [ ! -e "$W/dir/a<b>&c.bin" ] && break; sleep 0.2; done
+check "a file name cannot inject markup into the notification" bash -c "grep -q 'a&lt;b&gt;&amp;c.bin' '$W/notified' && ! grep -q 'a<b>&c.bin' '$W/notified'"
+mkdir "$W/dir/sub"; sleep 0.5
+printf '%s' "$EICAR" > "$W/dir/sub/deep.bin"
+for i in $(seq 1 50); do [ ! -e "$W/dir/sub/deep.bin" ] && break; sleep 0.2; done
+check "new subfolders are watched too" bash -c "[ ! -e '$W/dir/sub/deep.bin' ]"
+out="$(XDG_RUNTIME_DIR="$W/rt" "$BIN/snapguard-watch" "$W/dir" 2>&1)"
+check "a second copy exits at once" bash -c "printf '%s' \"\$1\" | grep -q 'already running'" _ "$out"
+kill $WPID 2>/dev/null; wait $WPID 2>/dev/null || true
+check "stopping it removes the pid file" bash -c "[ ! -e '$W/rt/snapguard-watch.pid' ]"
+out="$(XDG_RUNTIME_DIR="$W/rt" "$G" status 2>&1)"
+check "status shows real-time off when it is not running" bash -c "printf '%s' \"\$1\" | grep -q 'real-time     : .*off'" _ "$out"
+check "the watcher starts at login" grep -q 'Exec=snapguard-watch' "$ROOT/nix/modules/snapos.nix"
+check "the desktop can show notifications" grep -q 'pkgs.libnotify' "$ROOT/nix/modules/snapos.nix"
+
 section "snapguard and ClamAV (stand-in scanners)"
 CL="$TMP/clam"
 mkdir -p "$CL/bin" "$CL/db"
@@ -398,6 +437,7 @@ check "a second boot without approval rolls back at once" bash -c "grep -q 'swit
 check "the updater keeps its downloads out of /tmp" bash -c "! grep -q '\"/tmp/' '$ROOT/src/snapos.c' && [ -d '$U/state/work' ]"
 check "the guard runs at boot and after the desktop" bash -c "grep -q 'snapos guard boot' '$ROOT/nix/modules/snapos.nix' && grep -q 'snapos guard approve' '$ROOT/nix/modules/snapos.nix'"
 check "CI attaches the source package and its checksum to the release" bash -c "grep -q 'snapos-source.tar.gz.sha256' '$ROOT/.github/workflows/build-nixos-iso.yml'"
+check "snapupdate keeps the terminal open and logs the update" bash -c "grep -q 'read -r -p' '$ROOT/src/snapupdate.c' && grep -q 'update.log' '$ROOT/src/snapupdate.c'"
 check "snapupdate tells the user when an update was undone" grep -q 'update-rolled-back' "$ROOT/src/snapupdate.c"
 check "snapupdate runs at every login" grep -q 'Exec=snapupdate --autostart' "$ROOT/nix/modules/snapos.nix"
 check "snapupdate is built with SnapHelper" bash -c "grep -q 'bin/snapupdate' '$ROOT/nix/pkgs/snaphelper.nix' && grep -q 'snapupdate' '$ROOT/Makefile'"

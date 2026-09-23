@@ -126,8 +126,13 @@ static void on_later(GtkButton *b, gpointer d) { (void)b; (void)d; gtk_widget_de
 
 static void on_install(GtkButton *b, gpointer d) {
     (void)b; (void)d;
+    /* The terminal stays open until Enter, so an error can be read, and
+     * everything the updater prints is kept in the user's update.log. */
     const char *term = g_getenv("SNAPUPDATE_TERMINAL");
-    if (!term || !*term) term = "gnome-terminal --title=SnapOS -- snapos update";
+    if (!term || !*term) term = "gnome-terminal --title=SnapOS -- bash -c '"
+        "mkdir -p \"$HOME/.local/share/snapos\"; "
+        "snapos update 2>&1 | tee -a \"$HOME/.local/share/snapos/update.log\"; "
+        "echo; read -r -p \"Press Enter to close.\"'";
     GError *err = NULL;
     if (!g_spawn_command_line_async(term, &err)) {
         GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(app.win), GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR,

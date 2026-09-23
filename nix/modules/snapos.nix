@@ -102,6 +102,17 @@ in {
     environment.etc."snapos/theme".text = cfg.theme;
     environment.etc."snapos/appearance".text = cfg.appearance;
 
+    # SnapGuard in real time: at login, snapguard-watch starts scanning every
+    # new file in Downloads and every USB drive that is plugged in.
+    environment.etc."xdg/autostart/snapguard-watch.desktop".text = mkIf (cfg.security.antivirus == "snapguard") ''
+      [Desktop Entry]
+      Type=Application
+      Name=SnapGuard real-time protection
+      Exec=snapguard-watch
+      Terminal=false
+      X-GNOME-Autostart-enabled=true
+    '';
+
     # An update is only made the default for the next boot. At boot the guard
     # lets a new system start once; it is approved when a normal user logs in,
     # and undone (back to the previous generation) if that never happens.

@@ -9,7 +9,7 @@ on:
         default: ""
   push:
     branches: [ main ]
-    paths: [ "flake.nix", "flake.lock", "configuration.nix", "nix/**", "src/**", "Makefile", "branding/**", "tests/**" ]
+    paths: [ "VERSION", "flake.nix", "flake.lock", "configuration.nix", "nix/**", "src/**", "Makefile", "branding/**", "tests/**" ]
 
 permissions:
   contents: write

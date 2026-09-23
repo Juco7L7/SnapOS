@@ -836,6 +836,16 @@ int main(int argc, char **argv) {
         fprintf(stderr, "snapos: guard boot | approve\n");
         return 2;
     }
-    if (is_update) return cmd_update(argc > 2 && !strcmp(argv[2], "--force"));
+    if (is_update) {
+        int rc = cmd_update(argc > 2 && !strcmp(argv[2], "--force"));
+        /* in a terminal opened just for this, the message must stay readable */
+        if (rc != 0 && isatty(0) && !getenv("SNAPOS_NO_REBOOT")) {
+            printf("\n  %sPress Enter to close.%s", DIM, RST);
+            fflush(stdout);
+            char buf[16];
+            if (!fgets(buf, sizeof buf, stdin)) return rc;
+        }
+        return rc;
+    }
     return is_config ? cmd_config() : cmd_rebuild(argc, argv);
 }

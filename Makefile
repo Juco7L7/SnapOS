@@ -6,7 +6,7 @@ BIN      = bin
 PKG_CONFIG ?= pkg-config
 GUICFLAGS ?= -std=gnu11 -O2 -Wall
 
-TOOLS    = snapos snapctl snappy snapguard snap-deb snapconfig apt
+TOOLS    = snapos snapctl snappy snapguard snapguard-watch snap-deb snapconfig apt
 BINS     = $(addprefix $(BIN)/,$(TOOLS))
 
 all: $(BINS)

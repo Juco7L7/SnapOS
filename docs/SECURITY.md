@@ -71,9 +71,19 @@ same. While it scans it shows each file as it is checked; when it finishes it
 reports the files checked, the threats, the files that could not be checked and
 the time taken, and sends a desktop notification.
 
+## Real time
+
+`snapguard-watch` (`src/snapguard-watch.c`) starts at login and uses inotify
+on `~/Downloads` (and the folders inside it) and on `/run/media/<user>`. A
+file is scanned when it is closed after writing or moved into place, so
+browser downloads are checked once, when they are complete; temporary names
+(`.part`, `.crdownload`) are ignored. A threat is contained with `snapguard
+quarantine` (or only reported when `/etc/snapos/onInfected` is `warn`) and a
+desktop notification is sent. A drive that is plugged in is scanned whole.
+Each scan runs in its own process, so a slow scan never delays the watching.
+
 ## Not done yet
 
-- Real-time watching of Downloads and USB drives (planned for the next release).
 - Talking to `clamd` over its socket protocol instead of running `clamdscan`.
 - Sandboxing for programs that are not trusted yet.
 
