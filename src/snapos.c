@@ -119,7 +119,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) { perror("snapos"); return; }
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snapos: needs root, asking sudo...\n");
@@ -406,11 +406,66 @@ static void write_release_file(const char *dir, const Release *r) {
 }
 
 static int version_of(const char *dir, char *dst, size_t n);
+static int version_cmp(const char *a, const char *b);
+static int read_pending(int *previous, int *attempts, char *name, size_t n);
 
-/* Prints what a caller (the login check) needs. Exit 10 = update available. */
+/* The version of the system that is running now, from /etc/os-release
+ * (the files in /etc/snapos may already be newer than what runs). */
+static int running_version(char *dst, size_t n) {
+    const char *p = env_or("SNAPOS_OS_RELEASE", "/etc/os-release");
+    FILE *f = fopen(p, "r");
+    snprintf(dst, n, "?");
+    if (!f) return 0;
+    char line[256];
+    int ok = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "VERSION_ID=", 11)) continue;
+        char *v = line + 11;
+        if (*v == '"') v++;
+        v[strcspn(v, "\"\r\n")] = 0;
+        if (*v) { snprintf(dst, n, "%.*s", (int)n - 1, v); ok = 1; }
+        break;
+    }
+    fclose(f);
+    return ok;
+}
+
+/* The version a release announces in its name ("SnapOS installer V2.1"). */
+static int release_version(const Release *r, char *dst, size_t n) {
+    const char *from[] = { r->name, r->tag };
+    for (int i = 0; i < 2; i++) {
+        for (const char *p = from[i]; *p; p++) {
+            if ((*p == 'V' || *p == 'v') && p[1] >= '0' && p[1] <= '9') {
+                size_t k = 0;
+                for (const char *q = p + 1; (*q >= '0' && *q <= '9') || *q == '.'; q++)
+                    if (k + 1 < n) dst[k++] = *q;
+                dst[k] = 0;
+                return 1;
+            }
+        }
+    }
+    snprintf(dst, n, "?");
+    return 0;
+}
+
+/* 0 = this system is the latest release; 10 = a newer release exists;
+ * 11 = the newer release is already built and only waits for a restart. */
+static int update_state(const char *cur, const Release *r, char *pending, size_t n) {
+    int previous, attempts;
+    int built = read_pending(&previous, &attempts, pending, n);
+    if (!built) pending[0] = 0;
+    if (!same_commit(cur, r->sha)) return 10;
+    if (built) return 11;
+    char run[64], rel[64];
+    if (running_version(run, sizeof run) && release_version(r, rel, sizeof rel) && version_cmp(rel, run) > 0) return 10;
+    return 0;
+}
+
+/* Prints what a caller (the login check) needs. Exit 10 = update available,
+ * 11 = built, restart to use it. */
 static int cmd_update_check(void) {
     Release r;
-    char cur[128];
+    char cur[128], pending[256], run[64];
     installed_commit(cur, sizeof cur);
     if (!latest_release(&r)) {
         fprintf(stderr, "snapos: could not read the latest release (no network?)\n");
@@ -418,8 +473,11 @@ static int cmd_update_check(void) {
     }
     char ver[64];
     version_of(nixdir(), ver, sizeof ver);
-    printf("tag %s\nversion %s\ncurrent %.7s\nlatest %.7s\nname %s\nnotes\n%s\n", r.tag, ver, cur, r.sha, r.name, r.notes);
-    return same_commit(cur, r.sha) ? 0 : 10;
+    running_version(run, sizeof run);
+    int st = update_state(cur, &r, pending, sizeof pending);
+    printf("tag %s\nversion %s\nrunning %s\ncurrent %.7s\nlatest %.7s\nname %s\nstate %s\nnotes\n%s\n", r.tag, ver, run, cur, r.sha, r.name,
+           st == 0 ? "current" : st == 10 ? "available" : "built", r.notes);
+    return st;
 }
 
 /* The SnapOS version of a system tree, from its VERSION file. */
@@ -607,7 +665,26 @@ static int cmd_update(int force) {
     if (!latest_release(&r)) { ufail("Could not read the latest release. Is the network up?"); return 1; }
     snprintf(line, sizeof line, "Installed: build %.7s", cur); uok(line);
     snprintf(line, sizeof line, "Latest:    %s (%.7s)", r.name[0] ? r.name : r.tag, r.sha); uok(line);
-    if (same_commit(cur, r.sha)) { printf("\n  %sSnapOS is up to date.%s\n", BLD, RST); return 0; }
+    char pending[256], runver[64];
+    int st = update_state(cur, &r, pending, sizeof pending);
+    if (st == 0) { printf("\n  %sSnapOS is up to date.%s\n", BLD, RST); return 0; }
+    if (st == 11) {
+        printf("\n  %s✓ SnapOS %s is already built%s and starts at the next boot.\n", GRN, pending, RST);
+        if (isatty(0) && !getenv("SNAPOS_NO_REBOOT")) {
+            printf("\n  Restart now? [y/N] ");
+            fflush(stdout);
+            char buf[16];
+            if (fgets(buf, sizeof buf, stdin) && (buf[0] == 'y' || buf[0] == 'Y')) {
+                char *reboot[] = { "systemctl", "reboot", NULL };
+                run(reboot);
+            }
+        }
+        return 0;
+    }
+    if (running_version(runver, sizeof runver) && same_commit(cur, r.sha)) {
+        snprintf(line, sizeof line, "The running system is V%s; the release files here are newer. Installing again.", runver);
+        uwarn(line);
+    }
     if (!preflight(&r, force)) { printf("\n  %sNothing was changed.%s\n", DIM, RST); return 1; }
 
     ustep = 2; uheader("Downloading");
