@@ -14,6 +14,7 @@ static struct {
     char tag[128], name[256], notes[4096], latest[64], undone[256];
     int autostart;
     int built;      /* the update is built already; a restart finishes it */
+    int unknown;    /* the check could not reach GitHub */
 } app;
 
 static const char *CSS =
@@ -76,7 +77,7 @@ static int check(void) {
         out = NULL;
         if (i + 1 < tries) g_usleep(20 * G_USEC_PER_SEC);
     }
-    if (!out) return 0;
+    if (!out || (code != 0 && code != 10 && code != 11)) { app.unknown = 1; g_free(out); return 0; }
     char **lines = g_strsplit(out, "\n", -1);
     g_free(out);
     int in_notes = 0;
@@ -179,6 +180,7 @@ static void build_window(int available) {
     if (app.undone[0]) snprintf(title, sizeof title, "The update to %s was undone", app.undone);
     else if (available && app.built) snprintf(title, sizeof title, "%s is installed", app.name[0] ? app.name : app.tag);
     else if (available) snprintf(title, sizeof title, "%s is ready", app.name[0] ? app.name : app.tag);
+    else if (app.unknown) snprintf(title, sizeof title, "Could not check for updates");
     else snprintf(title, sizeof title, "SnapOS is up to date");
     GtkWidget *t = gtk_label_new(title);
     gtk_style_context_add_class(gtk_widget_get_style_context(t), "title");
@@ -191,6 +193,8 @@ static void build_window(int available) {
         ? "The new release is built and starts at the next boot. Restart to use it. If it does not come up, SnapOS goes back to this one by itself."
         : available
         ? "A new SnapOS release is available. Installing keeps your files, your programs and your settings, and the new system is used from the next restart. If it does not come up, SnapOS goes back to this one by itself."
+        : app.unknown
+        ? "GitHub did not answer. Check the network and try again in a moment; in a terminal, `snapos update` says more."
         : "This system runs the latest release.");
     gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
     gtk_label_set_xalign(GTK_LABEL(sub), 0);

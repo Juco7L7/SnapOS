@@ -18,6 +18,7 @@
 #define LEGACY_DIR  "/etc/nixos"
 #define FLAKE_ATTR  "snapos"
 #define UPDATE_API     "https://api.github.com/repos/Juco7L7/SnapOS"
+#define UPDATE_WEB     "https://github.com/Juco7L7/SnapOS"
 
 #define RED "\033[91m"
 #define GRN "\033[32m"
@@ -119,7 +120,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) { perror("snapos"); return; }
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snapos: needs root, asking sudo...\n");
@@ -293,7 +294,7 @@ static int json_string(const char *json, const char *key, char *dst, size_t n) {
 }
 
 typedef struct {
-    char tag[128], name[256], sha[64], date[64];
+    char tag[128], name[256], sha[64], date[64], version[32];
     char notes[4096];
     char source_url[1024], sum_url[1024];
 } Release;
@@ -333,10 +334,63 @@ static void find_assets(const char *json, Release *r) {
     }
 }
 
+/* The release describes itself in a small file next to the ISO
+ * (snapos-release.txt, written by the build): the commit, the version, the
+ * name and the date. GitHub serves "releases/latest/download/<file>" without
+ * the API, so this works even where the API is rate-limited. */
+static int latest_from_file(Release *r) {
+    const char *web = env_or("SNAPOS_UPDATE_WEB", UPDATE_WEB);
+    char url[1024], tmp[PATH_MAX];
+    snprintf(tmp, sizeof tmp, "%s/release.txt", work_dir());
+    snprintf(url, sizeof url, "%s/releases/latest/download/snapos-release.txt", web);
+    if (!fetch(url, tmp)) { unlink(tmp); return 0; }
+    FILE *f = fopen(tmp, "r");
+    if (!f) { unlink(tmp); return 0; }
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char *v = eq + 1;
+        if (!strcmp(line, "commit")) snprintf(r->sha, sizeof r->sha, "%s", v);
+        else if (!strcmp(line, "version")) snprintf(r->version, sizeof r->version, "%s", v);
+        else if (!strcmp(line, "name")) snprintf(r->name, sizeof r->name, "%s", v);
+        else if (!strcmp(line, "date")) snprintf(r->date, sizeof r->date, "%s", v);
+        else if (!strcmp(line, "tag")) snprintf(r->tag, sizeof r->tag, "%s", v);
+    }
+    fclose(f);
+    unlink(tmp);
+    if (!r->sha[0]) return 0;
+    snprintf(r->source_url, sizeof r->source_url, "%s/releases/latest/download/snapos-source.tar.gz", web);
+    snprintf(r->sum_url, sizeof r->sum_url, "%s/releases/latest/download/snapos-source.tar.gz.sha256", web);
+    if (!r->tag[0]) snprintf(r->tag, sizeof r->tag, "latest");
+    return 1;
+}
+
+/* The notes shown at login come from the API when it answers; they are not
+ * needed for the decision. */
+static void release_notes(Release *r) {
+    const char *api = env_or("SNAPOS_UPDATE_API", UPDATE_API);
+    char url[1024], tmp[PATH_MAX];
+    snprintf(tmp, sizeof tmp, "%s/release.json", work_dir());
+    snprintf(url, sizeof url, "%s/releases/latest", api);
+    if (!fetch(url, tmp)) { unlink(tmp); return; }
+    char *json = slurp(tmp);
+    unlink(tmp);
+    if (!json) return;
+    json_string(json, "body", r->notes, sizeof r->notes);
+    if (!r->name[0]) json_string(json, "name", r->name, sizeof r->name);
+    char tag[128];
+    if (json_string(json, "tag_name", tag, sizeof tag) && tag[0]) snprintf(r->tag, sizeof r->tag, "%s", tag);
+    free(json);
+}
+
 /* The latest release: its tag, name, notes, files and the commit the tag points at. */
 static int latest_release(Release *r) {
     memset(r, 0, sizeof *r);
     wait_for_network();
+    if (latest_from_file(r)) { release_notes(r); return 1; }
     const char *api = env_or("SNAPOS_UPDATE_API", UPDATE_API);
     char url[1024], tmp[PATH_MAX];
     snprintf(tmp, sizeof tmp, "%s/release.json", work_dir());
@@ -432,6 +486,7 @@ static int running_version(char *dst, size_t n) {
 
 /* The version a release announces in its name ("SnapOS installer V2.1"). */
 static int release_version(const Release *r, char *dst, size_t n) {
+    if (r->version[0]) { snprintf(dst, n, "%s", r->version); return 1; }
     const char *from[] = { r->name, r->tag };
     for (int i = 0; i < 2; i++) {
         for (const char *p = from[i]; *p; p++) {

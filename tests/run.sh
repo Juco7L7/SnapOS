@@ -367,10 +367,22 @@ printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/s
 printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
 chmod +x "$U/bin"/*
 printf 'VERSION_ID="2.0"\n' > "$U/os-release"
-up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
 out="$(up update check 2>&1)"; rc=$?
 check_eq "check reports a newer release with exit 10" "10" "$rc"
 check "check prints the tag, the commit and the notes" bash -c "printf '%s' \"\$1\" | grep -q '^tag V2.1' && printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
+# the release's own file, served without the GitHub API
+mkdir -p "$U/web/releases/latest/download"
+printf 'commit=%s\nversion=2.1\nname=SnapOS installer V2.1\ndate=2026-10-01T00:00:00Z\n' "$NEWSHA" > "$U/web/releases/latest/download/snapos-release.txt"
+cp "$U/archive/snapos-source.tar.gz" "$U/archive/snapos-source.tar.gz.sha256" "$U/web/releases/latest/download/"
+out="$(SNAPOS_UPDATE_WEB="file://$U/web" SNAPOS_UPDATE_API="file://$U/noapi" up update check 2>&1)"; rc=$?
+check_eq "the release file alone is enough to see a newer release (no API)" "10" "$rc"
+check "and it carries the commit, the version and the name" bash -c "printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q '^name SnapOS installer V2.1'" _ "$out"
+out="$(SNAPOS_UPDATE_WEB="file://$U/web" up update check 2>&1)"; rc=$?
+check "with the API answering too, the notes come along" bash -c "printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
+out="$(SNAPOS_UPDATE_API="file://$U/noapi" up update check 2>&1)"; rc=$?
+check_eq "without the file and without the API the check fails honestly" "1" "$rc"
+check "and says why" bash -c "printf '%s' \"\$1\" | grep -q 'could not read the latest release'" _ "$out"
 out="$(up version 2>&1)"
 check "version shows the SnapOS version, build and date" bash -c "printf '%s' \"\$1\" | grep -q 'SnapOS V2.0 (build abc1234, released 2026-09-01)'" _ "$out"
 printf '1.9\n' > "$U/src/snapos/VERSION"
