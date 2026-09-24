@@ -65,8 +65,11 @@ jobs:
           # the source package that `snapos update` installs, with its checksum
           git archive --format=tar.gz --prefix=snapos/ -o snapos-source.tar.gz "$GITHUB_SHA"
           sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256
+          # how the release describes itself to `snapos update` (no GitHub API needed)
+          printf 'commit=%s\nversion=%s\nname=SnapOS installer V%s\ndate=%s\n' \
+            "$GITHUB_SHA" "$(cat VERSION)" "$(cat VERSION)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > snapos-release.txt
           tag="${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-{0}', github.run_number) }}"
           gh release create "$tag" --draft --target "$GITHUB_SHA" \
             --title "SnapOS installer ${GITHUB_SHA::7}" \
             --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}. Flash with balenaEtcher." \
-            snapos-installer.iso snapos-installer.iso.sha256 snapos-source.tar.gz snapos-source.tar.gz.sha256
+            snapos-installer.iso snapos-installer.iso.sha256 snapos-source.tar.gz snapos-source.tar.gz.sha256 snapos-release.txt
