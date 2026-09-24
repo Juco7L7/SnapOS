@@ -148,7 +148,12 @@ a window shows its notes and an **Install now** button. Installing runs
    for the *next* boot only; what is running is not touched. The Debian layer
    gets Debian's security updates.
 
-Then you restart. The new system gets one try: it is approved the moment a
+Then you restart. Until you do, the login window says the release is
+installed and offers **Restart now** instead of installing it again. The
+check looks at the version that is running, so a system that stays on an
+older release is always offered the newer one.
+
+The new system gets one try: it is approved the moment a
 normal user logs in. If it never reaches the login screen, or nobody manages
 to log in within ten minutes, SnapOS goes back to the previous generation by
 itself on the next start and tells you at login. You can run `snapos update`

@@ -366,7 +366,8 @@ printf '#!/bin/sh\necho "NIXENV $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/nix-
 printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/systemctl"
 printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
 chmod +x "$U/bin"/*
-up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_STATE_DIR="$U/state" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+printf 'VERSION_ID="2.0"\n' > "$U/os-release"
+up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
 out="$(up update check 2>&1)"; rc=$?
 check_eq "check reports a newer release with exit 10" "10" "$rc"
 check "check prints the tag, the commit and the notes" bash -c "printf '%s' \"\$1\" | grep -q '^tag V2.1' && printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
@@ -409,10 +410,26 @@ check "update brings the new VERSION" grep -q '^2.1' "$U/sys/VERSION"
 check "update records the new release with its date" bash -c "grep -q '^$NEWSHA' '$U/sys/release' && grep -q '2026-10-01' '$U/sys/release'"
 check "update leaves a pending marker with the previous generation" bash -c "grep -q '^previous=42' '$U/state/update-pending' && grep -q '^attempts=0' '$U/state/update-pending' && grep -q 'V2.1' '$U/state/update-pending'"
 check "update keeps the previous files until the new system is approved" test -d "$U/sys.old"
+out="$(up update check 2>&1)"; rc=$?
+check_eq "check says the release is built and waits for a restart (exit 11)" "11" "$rc"
+check "and names the state" bash -c "printf '%s' \"\$1\" | grep -q '^state built'" _ "$out"
+out="$(up update 2>&1)"; rc=$?
+check_eq "update does not install the same release twice" "0" "$rc"
+check "and says it is built" bash -c "printf '%s' \"\$1\" | grep -q 'already built' && ! printf '%s' \"\$1\" | grep -q 'Downloading'" _ "$out"
+# the files in /etc/snapos may be newer than the system that runs (an
+# update that was built, then the marker cleared): the running version decides
+mkdir -p "$U/state2"
+printf 'VERSION_ID="2.0"\n' > "$U/os-release-old"
+out="$(SNAPOS_OS_RELEASE="$U/os-release-old" SNAPOS_STATE_DIR="$U/state2" up update check 2>&1)"; rc=$?
+check_eq "a running system older than the release name is offered the update" "10" "$rc"
+check "and the check prints the running version" bash -c "printf '%s' \"\$1\" | grep -q '^running 2.0'" _ "$out"
+printf 'VERSION_ID="2.1"\n' > "$U/os-release-new"
+out="$(SNAPOS_OS_RELEASE="$U/os-release-new" SNAPOS_STATE_DIR="$U/state2" up update check 2>&1)"; rc=$?
+check_eq "the same release, running: up to date (exit 0)" "0" "$rc"
 check "update syncs and upgrades the Debian layer" bash -c "grep -q 'SNAPDEB sync' '$U/calls' && grep -q 'SNAPDEB upgrade' '$U/calls'"
 check "update does not restart on its own" bash -c "! grep -q 'SYSTEMCTL reboot' '$U/calls'"
 up update check >/dev/null 2>&1
-check_eq "check is quiet once the release is installed" "0" "$?"
+check_eq "check keeps asking for a restart while the built release waits" "11" "$?"
 
 section "snapos update: the boot guard"
 up guard boot >/dev/null 2>&1

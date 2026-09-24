@@ -13,6 +13,7 @@ static struct {
     GtkWidget *win;
     char tag[128], name[256], notes[4096], latest[64], undone[256];
     int autostart;
+    int built;      /* the update is built already; a restart finishes it */
 } app;
 
 static const char *CSS =
@@ -70,7 +71,7 @@ static int check(void) {
     /* at login the network may need a minute; a failed check is tried again */
     int tries = app.autostart ? 6 : 1;
     for (int i = 0; i < tries; i++) {
-        if (check_once(&out, &code) && (code == 0 || code == 10)) break;
+        if (check_once(&out, &code) && (code == 0 || code == 10 || code == 11)) break;
         g_free(out);
         out = NULL;
         if (i + 1 < tries) g_usleep(20 * G_USEC_PER_SEC);
@@ -93,7 +94,8 @@ static int check(void) {
     }
     g_strfreev(lines);
     g_strstrip(app.notes);
-    return code == 10;
+    if (code == 11) app.built = 1;
+    return code == 10 || code == 11;
 }
 
 /* The guard leaves a marker when it went back to the previous system. Each
@@ -123,6 +125,12 @@ static int rollback_notice(char *name, size_t n) {
 }
 
 static void on_later(GtkButton *b, gpointer d) { (void)b; (void)d; gtk_widget_destroy(app.win); }
+
+static void on_restart(GtkButton *b, gpointer d) {
+    (void)b; (void)d;
+    g_spawn_command_line_async("systemctl reboot", NULL);
+    gtk_widget_destroy(app.win);
+}
 
 static void on_install(GtkButton *b, gpointer d) {
     (void)b; (void)d;
@@ -169,6 +177,7 @@ static void build_window(int available) {
 
     char title[512];
     if (app.undone[0]) snprintf(title, sizeof title, "The update to %s was undone", app.undone);
+    else if (available && app.built) snprintf(title, sizeof title, "%s is installed", app.name[0] ? app.name : app.tag);
     else if (available) snprintf(title, sizeof title, "%s is ready", app.name[0] ? app.name : app.tag);
     else snprintf(title, sizeof title, "SnapOS is up to date");
     GtkWidget *t = gtk_label_new(title);
@@ -178,6 +187,8 @@ static void build_window(int available) {
 
     GtkWidget *sub = gtk_label_new(app.undone[0]
         ? "The new system did not reach the login screen, so SnapOS went back to the previous one. Everything is as it was before the update. You can try again later with SnapOS Update."
+        : available && app.built
+        ? "The new release is built and starts at the next boot. Restart to use it. If it does not come up, SnapOS goes back to this one by itself."
         : available
         ? "A new SnapOS release is available. Installing keeps your files, your programs and your settings, and the new system is used from the next restart. If it does not come up, SnapOS goes back to this one by itself."
         : "This system runs the latest release.");
@@ -204,9 +215,9 @@ static void build_window(int available) {
     g_signal_connect(later, "clicked", G_CALLBACK(on_later), NULL);
     gtk_box_pack_start(GTK_BOX(buttons), later, FALSE, FALSE, 0);
     if (available && !app.undone[0]) {
-        GtkWidget *install = gtk_button_new_with_label("Install now");
+        GtkWidget *install = gtk_button_new_with_label(app.built ? "Restart now" : "Install now");
         gtk_style_context_add_class(gtk_widget_get_style_context(install), "primary");
-        g_signal_connect(install, "clicked", G_CALLBACK(on_install), NULL);
+        g_signal_connect(install, "clicked", G_CALLBACK(app.built ? on_restart : on_install), NULL);
         gtk_box_pack_start(GTK_BOX(buttons), install, FALSE, FALSE, 0);
         gtk_widget_grab_focus(install);
     }
