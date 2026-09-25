@@ -12,6 +12,11 @@ permissions:
 jobs:
   desktop-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: [ desktop, desktop-light, plasma, plasma-light, xfce, xfce-light, hyprland, hyprland-light ]
+    name: ${{ matrix.desktop }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,10 +30,13 @@ jobs:
       - name: Install Nix (flakes)
         uses: DeterminateSystems/nix-installer-action@main
 
-
-      - name: Boot the installed desktop in a VM
+      - name: Free up disk space
         run: |
-          nix --extra-experimental-features 'nix-command flakes' build .#checks.x86_64-linux.desktop.driver -L -o driver
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+
+      - name: Boot the installed desktop in a VM (${{ matrix.desktop }})
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#checks.x86_64-linux.${{ matrix.desktop }}.driver -L -o driver
           mkdir -p desktop-test-out
           set +e
           ./driver/bin/nixos-test-driver --output_directory desktop-test-out
@@ -46,6 +54,6 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-run${{ github.run_number }}
+          name: ${{ matrix.desktop }}-run${{ github.run_number }}
           path: desktop-test-out
           if-no-files-found: ignore

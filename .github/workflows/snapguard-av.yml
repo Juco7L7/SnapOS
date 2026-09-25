@@ -5,18 +5,10 @@ name: Test SnapGuard
 #                     signatures, driven by the SnapGuard tools built here.
 #   nixos-vm        : the ClamAV service as SnapOS configures it, in a VM.
 
+# Run by hand (Actions > Test SnapGuard > Run workflow): it is slow and the
+# result does not change with every commit.
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - "src/snapguard.c"
-      - "src/snapguard-gui.c"
-      - "src/snapguard-watch.c"
-      - "src/snaphelper.c"
-      - "nix/modules/snapos.nix"
-      - "nix/tests/desktop.nix"
-      - ".github/workflows/snapguard-av.yml"
 
 permissions:
   contents: read

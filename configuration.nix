@@ -18,7 +18,9 @@
     ++ lib.optional (builtins.pathExists ./local.nix) ./local.nix
     ++ lib.optional (builtins.pathExists ./graphics.nix) ./graphics.nix;
 
-  snapos.desktop             = "budgie";
+  # The desktop (budgie, plasma, xfce or hyprland) and the appearance are
+  # chosen in the installer and saved in local.nix; this is only the default.
+  snapos.desktop             = lib.mkDefault "budgie";
   snapos.theme               = "snappy-red";
   snapos.security.antivirus  = "snapguard";
   snapos.security.onInfected = "contain";

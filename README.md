@@ -67,8 +67,10 @@ to `configuration.nix`, and `snapos rebuild` applies that folder too (see
 - **SnapHelper**, a short tour that opens the first time you log in (also in the
   menu): declaring apps, opening a `.deb`, SnapGuard. Use the arrow keys or the
   Next and Back buttons.
-- **Terminal installer** in ten steps, in English or Portuguese, for BIOS and
-  UEFI computers.
+- **Four desktops**: Budgie (the default), KDE Plasma, Xfce or Hyprland,
+  chosen in the installer, all with the SnapOS look in dark or light.
+- **Terminal installer** in eleven steps, in English or Portuguese, for BIOS
+  and UEFI computers.
 - **Graphics that adapt.** On laptops with two graphics chips the installer can
   use the Intel chip only.
 - **Small C tools** for everything else, in [`src/`](src/).
@@ -76,7 +78,7 @@ to `configuration.nix`, and `snapos rebuild` applies that folder too (see
 ## Install
 
 <p align="center">
-  <img src="branding/snappy-install.gif" alt="Snappy walks through the ten installer steps" width="640">
+  <img src="branding/snappy-install.gif" alt="Snappy walks through the eleven installer steps" width="640">
 </p>
 
 1. Download `snapos-installer.iso` from the Releases page.
@@ -84,12 +86,28 @@ to `configuration.nix`, and `snapos rebuild` applies that folder too (see
 3. Boot from the USB drive. The installer starts by itself.
 
 The installer asks for: network, keyboard, language, time zone, disk, account,
-appearance (dark or light) and graphics, then shows a review before it
+desktop, appearance (dark or light) and graphics, then shows a review before it
 installs. English is the default;
 choose Portuguese on the first screen if you prefer it.
 
 If SnapOS is already installed, run the installer again and pick **Update SnapOS
 (keeps your files)**.
+
+## Desktops
+
+The installer asks which desktop you want:
+
+| Desktop | What it is |
+| --- | --- |
+| **Budgie** (default) | simple and light; the SnapOS dock with the defender, browser, store and terminal |
+| **KDE Plasma** | full-featured and highly configurable; Breeze with the SnapOS red accent and the same programs pinned to the panel |
+| **Xfce** | classic and very light; the SnapOS theme, a bottom panel with the same programs and no desktop icons |
+| **Hyprland** | tiling, keyboard-driven, Wayland only, for people who like that: Super+Enter terminal, Super+D launcher, Super+Q close, Super+1..9 workspaces, Print screenshot; a bottom bar with the SnapOS programs, title bars with close, maximize and minimize (Super+H shows the minimized ones), notifications and the wallpaper come set up, and SnapOS windows float |
+
+All four get the red Papirus icons, the SnapOS wallpaper, the dark or light
+appearance, the same login screen, SnapGuard, SnapHelper and the updater. To
+switch later, change `snapos.desktop` in `/etc/snapos/local.nix` and run
+`snapos rebuild`.
 
 ## Dark or light
 

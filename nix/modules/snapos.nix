@@ -53,11 +53,9 @@ let
   # The SnapOS release this tree is (the VERSION file at the repository root).
   snaposVersion = lib.strings.trim (builtins.readFile ../../VERSION);
 in {
+  imports = [ ./desktop.nix ];
+
   options.snapos = {
-    desktop = mkOption {
-      type = types.enum [ "budgie" ];
-      default = "budgie";
-    };
     theme = mkOption { type = types.str; default = "snappy-red"; };
     appearance = mkOption {
       type = types.enum [ "dark" "light" ];
@@ -73,6 +71,9 @@ in {
   config = {
     system.nixos.distroName = "SnapOS";
     networking.hostName = mkDefault "snapos";
+    # Wi-Fi and Ethernet on every desktop (only Budgie's module turns this on
+    # by itself; the installer keeps the Wi-Fi networks in NetworkManager)
+    networking.networkmanager.enable = true;
 
     # os-release names the SnapOS release, not the NixOS one: fastfetch and
     # `snapos version` show "SnapOS 2.0", and updates compare this number.
@@ -90,11 +91,6 @@ in {
     '';
     environment.etc."snapos/version".text = snaposVersion;
 
-    services.xserver.enable = true;
-    services.desktopManager.budgie.enable = true;
-    services.xserver.displayManager.lightdm.enable = true;
-    services.desktopManager.gnome.enable = mkForce false;
-    services.desktopManager.plasma6.enable = mkForce false;
     # Budgie turns on Rygel, a DLNA media server that shares the user's music,
     # videos and photos with other devices on the network. Not on SnapOS.
     services.gnome.rygel.enable = false;
@@ -177,6 +173,10 @@ in {
       ++ optional config.services.xserver.enable pkgs.snaphelper
       ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg pkgs.libnotify ];
 
+    # SnapHelper's animations live in share/snapos; desktops that do not link
+    # the whole share tree (Hyprland) still need it.
+    environment.pathsToLink = [ "/share/snapos" ];
+
     # Programs from the Debian layer show up in the menu and on the PATH.
     environment.sessionVariables.XDG_DATA_DIRS = [ "${debLayer}/exports/share" ];
     environment.extraInit = ''
@@ -235,7 +235,9 @@ in {
     boot.loader.grub.configurationLimit = 10;
 
     services.xserver.displayManager.lightdm.background = loginBackground;
+    # the same login screen on every desktop (only Budgie turns it on by itself)
     services.xserver.displayManager.lightdm.greeters.slick = {
+      enable = true;
       theme = { name = gtkTheme; package = gtkPackage; };
       iconTheme = { name = iconName; package = redIcons; };
     };
@@ -251,20 +253,7 @@ in {
       "x-scheme-handler/unknown" = "firefox.desktop";
     };
 
-    # The dock: 45 pixels high, with the defender, the browser, the programs
-    # store and the terminal pinned. (NixOS pins a media player by default.)
-    services.desktopManager.budgie.extraGSettingsOverrides = ''
-      [com.solus-project.icon-tasklist:Budgie]
-      pinned-launchers=["snapguard.desktop", "firefox.desktop", "org.gnome.Software.desktop", "org.gnome.Terminal.desktop"]
-
-      [com.solus-project.budgie-panel.panel:Budgie]
-      size=45
-    '';
-
     programs.dconf.enable = true;
-    environment.budgie.excludePackages = [
-      (pkgs.runCommand "nixos-background-info" { } "mkdir -p $out")
-    ];
     programs.dconf.profiles.user.databases = [
       {
         settings = {
@@ -287,9 +276,6 @@ in {
           };
           "org/gnome/desktop/peripherals/touchpad" = {
             disable-while-typing = false;
-          };
-          "com/solus-project/budgie-panel" = {
-            dark-theme = !light;
           };
         };
       }
