@@ -93,6 +93,36 @@ choose Portuguese on the first screen if you prefer it.
 If SnapOS is already installed, run the installer again and pick **Update SnapOS
 (keeps your files)**.
 
+## ARM64 computers
+
+Every release also ships `snapos-installer-aarch64.iso` for ARM64 computers
+that boot by UEFI (ARM laptops, mini PCs and boards with a UEFI firmware).
+It is the same SnapOS: the same installer, desktops, SnapGuard and updater.
+`snapos rebuild` and `snapos update` build the ARM64 system, and the Debian
+layer installs `arm64` (or `all`) `.deb` files. Boards that need a vendor
+image instead of UEFI (most Raspberry Pi setups) are not covered.
+
+### Installing without questions
+
+A USB stick (or a small image) labelled `SNAPOS_ANSWERS` with a file
+`snapos-answers.env` answers everything, and the installer runs on its own:
+
+```
+LANG=en
+KEYMAP=us
+LOCALE=en_US.UTF-8
+TIMEZONE=UTC
+DISK=sda
+USERNAME=snap
+PASSWORD=change-me
+HOSTNAME=snapos
+DESKTOP=budgie
+LOOK=dark
+GRAPHICS=auto
+```
+
+CI uses this to install SnapOS in a virtual machine and boot the result.
+
 ## Desktops
 
 <p align="center">
@@ -158,7 +188,7 @@ At every login SnapOS asks GitHub whether a newer release exists. If one does,
 a window shows its notes and an **Install now** button. Installing runs
 `snapos update` in a terminal, in four steps:
 
-1. **Checking**: the computer is x86_64, `/nix` has room, the release is not
+1. **Checking**: the computer is x86_64 or aarch64, `/nix` has room, the release is not
    older than the installed one (by date, and by the `VERSION` number once the
    package is downloaded; `--force` overrides), and the release ships its
    source package with a checksum.

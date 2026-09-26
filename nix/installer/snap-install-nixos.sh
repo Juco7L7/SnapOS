@@ -274,24 +274,54 @@ warn() { printf '  %s%s%s\n' "$YEL" "$*" "$RST"; }
 # Typed values land inside Nix files: only the characters a keymap, locale or
 # time zone name can hold are kept.
 clean_id() { printf '%s' "$1" | tr -cd 'A-Za-z0-9_./@+:-'; }
+# x86_64 PCs and ARM64 computers get different system attributes; an ARM64
+# computer boots by UEFI only, so GRUB goes to the EFI partition alone.
+ARCH="$(uname -m)"
+FLAKE_ATTR=snapos
+[ "$ARCH" = aarch64 ] && FLAKE_ATTR=snapos-aarch64
+
+# Unattended install: a disk (USB stick, image) labelled SNAPOS_ANSWERS with a
+# file snapos-answers.env answers the questions. Keys: LANG (en|pt), KEYMAP,
+# LOCALE, TIMEZONE, DISK (e.g. sda), USERNAME, PASSWORD, HOSTNAME,
+# DESKTOP (budgie|plasma|xfce|hyprland), LOOK (dark|light), GRAPHICS (auto|intel).
+UNATTENDED=0
+load_answers() {
+    local dev=/dev/disk/by-label/SNAPOS_ANSWERS d f line k v
+    [ -e "$dev" ] || return 0
+    d="$(mktemp -d)"
+    mount -o ro "$dev" "$d" 2>/dev/null || { rmdir "$d"; return 0; }
+    f="$d/snapos-answers.env"
+    if [ -r "$f" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            k="${line%%=*}"; v="${line#*=}"
+            case "$k" in
+                LANG|KEYMAP|LOCALE|TIMEZONE|DISK|USERNAME|PASSWORD|HOSTNAME|DESKTOP|LOOK|GRAPHICS) printf -v "A_$k" '%s' "$v" ;;
+            esac
+        done < "$f"
+        UNATTENDED=1
+    fi
+    umount "$d" 2>/dev/null; rmdir "$d"
+}
+load_answers
 caret() { printf '\n  %s›%s ' "$ACC" "$RST"; }
 
 die() {
     printf '\n  %s%s%s\n  %s%s%s\n\n' "$ACC" "$*" "$RST" "$DIM" "$(t rerun)" "$RST"
+    [ "$UNATTENDED" = 1 ] && printf 'SNAPOS-INSTALL-FAILED\n'
     exit 1
 }
 
 restart() {
     printf '\n'
-    say "$(t done_hint)"
-    read -r _
+    if [ "$UNATTENDED" = 1 ]; then printf 'SNAPOS-INSTALL-OK\n'; sleep 3
+    else say "$(t done_hint)"; read -r _; fi
     sync
     systemctl reboot 2>/dev/null || reboot -f
     exit 0
 }
 
 choose_desktop() {
-    local choice
+    local choice=""
     header
     say "${BLD}$(t desk_title)${RST}"
     printf '\n'
@@ -300,7 +330,8 @@ choose_desktop() {
     opt 3 "$(t desk_xfce)"
     opt 4 "$(t desk_hyprland)"
     caret
-    read -r choice
+    case "${A_DESKTOP:-}" in budgie) choice=1 ;; plasma) choice=2 ;; xfce) choice=3 ;; hyprland) choice=4 ;; esac
+    [ -n "$choice" ] || read -r choice
     case "$choice" in
         2) DESK=plasma;   DESKLABEL="KDE Plasma" ;;
         3) DESK=xfce;     DESKLABEL="Xfce" ;;
@@ -310,14 +341,15 @@ choose_desktop() {
 }
 
 choose_appearance() {
-    local choice
+    local choice=""
     header
     say "${BLD}$(t look_title)${RST}"
     printf '\n'
     opt 1 "$(t look_dark)"
     opt 2 "$(t look_light)"
     caret
-    read -r choice
+    case "${A_LOOK:-}" in dark) choice=1 ;; light) choice=2 ;; esac
+    [ -n "$choice" ] || read -r choice
     case "$choice" in
         2) LOOK=light; LOOKLABEL="$(t look_light)" ;;
         *) LOOK=dark;  LOOKLABEL="$(t look_dark)" ;;
@@ -345,7 +377,9 @@ choose_graphics() {
     opt 1 "$(t gfx_auto)"
     opt 2 "$(t gfx_intel)"
     caret
-    read -r choice
+    choice=""
+    case "${A_GRAPHICS:-}" in auto) choice=1 ;; intel) choice=2 ;; esac
+    [ -n "$choice" ] || [ "$UNATTENDED" = 1 ] || read -r choice
     [ -n "$choice" ] || choice="$GFXDEFAULT"
     case "$choice" in
         2) GFXMODE=intel; GFXLABEL="$(t gfx_intel)" ;;
@@ -408,7 +442,7 @@ update_system() {
     keep_network
     say "$(t u_bak)"
     printf '\n  %s%s%s\n\n' "$BLD" "$(t i_run)" "$RST"
-    LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#snapos" --no-root-passwd \
+    LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#$FLAKE_ATTR" --no-root-passwd \
         || die "$(t f_install)"
     printf '\n'
     ok "${BLD}$(t done_title)${RST}"
@@ -461,6 +495,7 @@ ask() {
 
 askpass() {
     local p1 p2
+    if [ -n "${A_PASSWORD:-}" ]; then PASSWORD="$A_PASSWORD"; return 0; fi
     while true; do
         printf '  %s%s%s' "$BLD" "$1" "$RST"
         caret
@@ -561,7 +596,8 @@ printf '\n'
 opt 1 "English"
 opt 2 "Portugues"
 caret
-read -r choice
+choice=""
+if [ "$UNATTENDED" = 1 ]; then choice=1; [ "${A_LANG:-}" = pt ] && choice=2; else read -r choice; fi
 [ "$choice" = 2 ] && L=pt
 
 if [ -e /dev/disk/by-label/nixos ]; then
@@ -574,7 +610,7 @@ if [ -e /dev/disk/by-label/nixos ]; then
     opt 3 "$(t inst_again)"
     opt 4 "$(t inst_shell)"
     caret
-    read -r choice
+    if [ "$UNATTENDED" = 1 ]; then choice=3; else read -r choice; fi
     case "$choice" in
         2) update_system ;;
         3) ;;
@@ -593,7 +629,7 @@ fi
 say "$(t welcome)"
 printf '\n'
 say "${DIM}$(t welcome_hint)${RST}"
-read -r _
+[ "$UNATTENDED" = 1 ] || read -r _
 
 network_connect
 
@@ -608,15 +644,15 @@ else
 fi
 
 step 2 s_kb
-pick_from_list kb_title "localectl list-keymaps" "${KB_LIST[@]}"
+if [ -n "${A_KEYMAP:-}" ]; then ANSWER="$A_KEYMAP"; else pick_from_list kb_title "localectl list-keymaps" "${KB_LIST[@]}"; fi
 KEYMAP="$(clean_id "$ANSWER")"
 
 step 3 s_loc
-pick_from_list loc_title "localectl list-locales" "${LOC_LIST[@]}"
+if [ -n "${A_LOCALE:-}" ]; then ANSWER="$A_LOCALE"; else pick_from_list loc_title "localectl list-locales" "${LOC_LIST[@]}"; fi
 LOCALE="$(clean_id "$ANSWER")"
 
 step 4 s_tz
-pick_from_list tz_title "timedatectl list-timezones" "${TZ_LIST[@]}"
+if [ -n "${A_TIMEZONE:-}" ]; then ANSWER="$A_TIMEZONE"; else pick_from_list tz_title "timedatectl list-timezones" "${TZ_LIST[@]}"; fi
 TIMEZONE="$(clean_id "$ANSWER")"
 
 step 5 s_disk
@@ -625,22 +661,26 @@ say "${BLD}$(t disk_title)${RST}"
 printf '\n'
 lsblk -dno NAME,SIZE,MODEL -e 7,11 2>/dev/null | sed 's/^/    /'
 printf '\n  %s' "$(t disk_prompt)"
-read -r DISKNAME
+if [ -n "${A_DISK:-}" ]; then DISKNAME="$A_DISK"; printf '%s\n' "$DISKNAME"; else read -r DISKNAME; fi
 TARGET="/dev/$DISKNAME"
 [ -b "$TARGET" ] || die "$(t disk_missing "$TARGET")"
+GRUB_DEVICE="$TARGET"
+[ "$ARCH" = aarch64 ] && GRUB_DEVICE=nodev
 
 step 6 s_acct
 header
-ask "$(t user)" "snap"; USERNAME="$ANSWER"
+if [ -n "${A_USERNAME:-}" ]; then USERNAME="$A_USERNAME"; else ask "$(t user)" "snap"; USERNAME="$ANSWER"; fi
 until [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{1,31}$ ]]; do
+    [ "$UNATTENDED" = 1 ] && die "$(t bad_user)"
     warn "$(t bad_user)"
     ask "$(t user)" "snap"; USERNAME="$ANSWER"
 done
 printf '\n'
 askpass "$(t pass "$USERNAME")"
 printf '\n'
-ask "$(t host)" "snapos"; HOSTNAME="$ANSWER"
+if [ -n "${A_HOSTNAME:-}" ]; then HOSTNAME="$A_HOSTNAME"; else ask "$(t host)" "snapos"; HOSTNAME="$ANSWER"; fi
 until [[ "$HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,62})$ ]]; do
+    [ "$UNATTENDED" = 1 ] && die "$(t bad_host)"
     warn "$(t bad_host)"
     ask "$(t host)" "snapos"; HOSTNAME="$ANSWER"
 done
@@ -667,7 +707,7 @@ printf '  %-12s %s\n' "$(t r_look)" "$LOOKLABEL"
 printf '  %-12s %s\n' "$(t r_gfx)" "$GFXLABEL"
 printf '\n  %s%s%s\n\n' "$ACC" "$(t erase)" "$RST"
 printf '  %s' "$(t save)"
-read -r CONFIRM
+if [ "$UNATTENDED" = 1 ]; then CONFIRM=SAVE; printf 'SAVE\n'; else read -r CONFIRM; fi
 [ "$CONFIRM" = "SAVE" ] || die "$(t cancel)"
 
 step 11 s_install
@@ -723,7 +763,7 @@ cat > /mnt/etc/snapos/local.nix <<EOF
     isNormalUser = true;
     extraGroups = [ "wheel" "networkmanager" ];
   };
-  boot.loader.grub.device = "${TARGET}";
+  boot.loader.grub.device = "${GRUB_DEVICE}";$([ "$ARCH" = aarch64 ] && printf '\n  boot.kernelParams = [ "console=ttyAMA0,115200" "console=tty0" ];')
   boot.loader.grub.efiSupport = true;
   boot.loader.grub.efiInstallAsRemovable = true;
   boot.loader.efi.canTouchEfiVariables = false;
@@ -733,7 +773,7 @@ write_graphics
 keep_network
 
 printf '\n  %s%s%s\n\n' "$BLD" "$(t i_run)" "$RST"
-LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#snapos" --no-root-passwd \
+LC_ALL=C.UTF-8 nixos-install --root /mnt --flake "path:/mnt/etc/snapos#$FLAKE_ATTR" --no-root-passwd \
     || die "$(t f_install)"
 
 say "$(t i_pw "$USERNAME")..."

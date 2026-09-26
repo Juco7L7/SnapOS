@@ -11,6 +11,7 @@
 #include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 
 /* snap-deb: Debian packages on SnapOS.
@@ -194,11 +195,23 @@ static void clean(char *dst, size_t n, const char *src) {
 
 static void debs_dir(char *dst, size_t n) { pathf(dst, n, "%s/debs", nixdir()); }
 
+/* Debian's name for this computer's architecture: amd64 or arm64. */
+static const char *host_arch(void) {
+    static char a[32];
+    if (a[0]) return a;
+    const char *env = getenv("SNAPDEB_ARCH");
+    struct utsname u;
+    if (env && *env) snprintf(a, sizeof a, "%s", env);
+    else if (uname(&u) == 0 && !strcmp(u.machine, "aarch64")) snprintf(a, sizeof a, "arm64");
+    else snprintf(a, sizeof a, "amd64");
+    return a;
+}
+
 static void target_name(const DebInfo *d, char *dst, size_t n) {
     char p[128], v[128], a[32];
     clean(p, sizeof p, d->pkg);
     clean(v, sizeof v, d->ver[0] ? d->ver : "0");
-    clean(a, sizeof a, d->arch[0] ? d->arch : "amd64");
+    clean(a, sizeof a, d->arch[0] ? d->arch : host_arch());
     pathf(dst, n, "%s_%s_%s.deb", p, v, a);
 }
 
@@ -285,7 +298,7 @@ static int refuse_service(const DebInfo *d, const char *unit) {
 }
 
 static int arch_ok(const DebInfo *d) {
-    return !d->arch[0] || !strcmp(d->arch, "amd64") || !strcmp(d->arch, "all");
+    return !d->arch[0] || !strcmp(d->arch, host_arch()) || !strcmp(d->arch, "all");
 }
 
 /* 0 clean, 1 infected (and contained), 2 could not scan */
@@ -403,7 +416,7 @@ static int package_list(const char *pkg, char *dst, size_t n) {
     rootfs(r, sizeof r);
     pathf(dst, n, "%s/var/lib/dpkg/info/%s.list", r, pkg);
     if (exists(dst)) return 1;
-    pathf(dst, n, "%s/var/lib/dpkg/info/%s:amd64.list", r, pkg);
+    pathf(dst, n, "%s/var/lib/dpkg/info/%s:%s.list", r, pkg, host_arch());
     return exists(dst);
 }
 
@@ -494,7 +507,9 @@ static int bootstrap(void) {
     run(rm);
     char *mk[] = { "mkdir", "-p", tmp, NULL };
     if (run(mk) != 0) return 0;
-    char *argv[] = { "debootstrap", "--variant=minbase", keyopt, (char *)suite(), tmp, (char *)mirror(), NULL };
+    char archopt[64];
+    snprintf(archopt, sizeof archopt, "--arch=%s", host_arch());
+    char *argv[] = { "debootstrap", "--variant=minbase", archopt, keyopt, (char *)suite(), tmp, (char *)mirror(), NULL };
     if (run(argv) != 0) {
         char log[PATH_MAX + 40];
         pathf(log, sizeof log, "%s/debootstrap/debootstrap.log", tmp);
@@ -696,7 +711,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) return;
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPDEB_DIR,SNAPDEB_SUITE,SNAPDEB_MIRROR";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPDEB_DIR,SNAPDEB_SUITE,SNAPDEB_MIRROR,SNAPDEB_ARCH";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snap-deb: needs root, asking sudo...\n");
@@ -1005,7 +1020,7 @@ static int cmd_add(const char *deb, int force) {
     if (!check_file(deb, &d)) return 2;
     show_info(deb, &d);
     if (!arch_ok(&d)) {
-        fprintf(stderr, "snap-deb: this package is for %s, not for this computer (amd64)\n", d.arch);
+        fprintf(stderr, "snap-deb: this package is for %s, not for this computer (%s)\n", d.arch, host_arch());
         return 2;
     }
     if (refuse_service(&d, service_in(deb))) return 2;
@@ -1037,7 +1052,7 @@ static int interactive(const char *deb) {
     if (!check_file(deb, &d)) { wait_enter(); return 2; }
     show_info(deb, &d);
     if (!arch_ok(&d)) {
-        printf("  %sThis package is for %s, not for this computer (amd64).%s\n", RED, d.arch, RST);
+        printf("  %sThis package is for %s, not for this computer (%s).%s\n", RED, d.arch, host_arch(), RST);
         wait_enter();
         return 2;
     }

@@ -13,6 +13,6 @@ stdenv.mkDerivation {
 
   meta = {
     description = "SnapOS system core (declarative controller, security, pet), in C";
-    platforms = [ "x86_64-linux" ];
+    platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
 }

@@ -16,7 +16,17 @@
 
 #define SNAPOS_DIR  "/etc/snapos"
 #define LEGACY_DIR  "/etc/nixos"
-#define FLAKE_ATTR  "snapos"
+/* The system attribute in the flake: snapos on x86_64, snapos-aarch64 on ARM64. */
+static const char *flake_attr(void) {
+    static char attr[64];
+    if (attr[0]) return attr;
+    const char *env = getenv("SNAPOS_FLAKE_ATTR");
+    struct utsname u;
+    if (env && *env) snprintf(attr, sizeof attr, "%s", env);
+    else if (uname(&u) == 0 && !strcmp(u.machine, "aarch64")) snprintf(attr, sizeof attr, "snapos-aarch64");
+    else snprintf(attr, sizeof attr, "snapos");
+    return attr;
+}
 #define UPDATE_API     "https://api.github.com/repos/Juco7L7/SnapOS"
 #define UPDATE_WEB     "https://github.com/Juco7L7/SnapOS"
 
@@ -120,7 +130,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) { perror("snapos"); return; }
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB,SNAPOS_FLAKE_ATTR,SNAPDEB_ARCH";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snapos: needs root, asking sudo...\n");
@@ -166,7 +176,7 @@ static int has_debs(void) {
 
 static int nixos_rebuild(const char *dir, const char *mode, int argc, char **argv, int extra) {
     char flake[PATH_MAX + 16];
-    snprintf(flake, sizeof flake, "path:%s#%s", dir, FLAKE_ATTR);
+    snprintf(flake, sizeof flake, "path:%s#%s", dir, flake_attr());
     char **nargv = calloc((size_t)argc + 6, sizeof *nargv);
     if (!nargv) { perror("snapos"); return 1; }
     int k = 0;
@@ -613,10 +623,11 @@ static int preflight(const Release *r, int force) {
     char line[512];
     int ok = 1;
     struct utsname u;
-    if (uname(&u) == 0 && strcmp(u.machine, "x86_64") != 0) {
-        snprintf(line, sizeof line, "This computer is %s; SnapOS releases are built for x86_64.", u.machine);
+    if (uname(&u) != 0) { ufail("Could not tell the architecture of this computer."); ok = 0; }
+    else if (strcmp(u.machine, "x86_64") != 0 && strcmp(u.machine, "aarch64") != 0) {
+        snprintf(line, sizeof line, "This computer is %s; SnapOS is built for x86_64 and aarch64.", u.machine);
         ufail(line); ok = 0;
-    } else uok("Architecture: x86_64");
+    } else { snprintf(line, sizeof line, "Architecture: %s", u.machine); uok(line); }
 
     const char *where = getenv("SNAPOS_NIX_DIR") ? target_dir() : "/nix";
     struct statvfs vfs;

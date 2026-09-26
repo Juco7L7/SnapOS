@@ -1,0 +1,163 @@
+name: Build ISO (ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      iso_name:
+        description: "Release tag (default: iso-arm-<run number>)"
+        required: false
+        default: ""
+  push:
+    branches: [ main ]
+    paths: [ "VERSION", "flake.nix", "flake.lock", "configuration.nix", "nix/**", "src/**", "Makefile", "branding/**", "tests/**", ".github/workflows/build-nixos-iso-arm.yml" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-iso-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the C tools
+        run: |
+          make
+          bash tests/run.sh
+
+      - name: Install Nix (flakes)
+        uses: DeterminateSystems/nix-installer-action@main
+
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+
+      - name: Build the installed system (smoke test, no disk needed)
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#toplevel -L --no-link
+          nix --extra-experimental-features 'nix-command flakes' build .#toplevel-light -L --no-link
+          echo "OK: the ARM64 system builds cleanly."
+
+      - name: Build the installer ISO (aarch64)
+        run: |
+          nix --extra-experimental-features 'nix-command flakes' build .#iso -L
+          ls -lh result/iso/*.iso
+
+      # The image is booted by UEFI in QEMU on the runner itself, until the
+      # installer prints its first screen on the serial console.
+      - name: Boot the image in QEMU (UEFI)
+        run: |
+          fwdir=$(nix --extra-experimental-features 'nix-command flakes' build --inputs-from . nixpkgs#OVMF.fd --no-link --print-out-paths | head -1)
+          fw="$fwdir/FV/QEMU_EFI.fd"
+          echo "firmware: $fw"; test -s "$fw"
+          accel=tcg; cpu=cortex-a72
+          if [ -w /dev/kvm ]; then accel=kvm; cpu=host; fi
+          echo "accelerator: $accel"
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command \
+            qemu-system-aarch64 -M virt -accel "$accel" -cpu "$cpu" -smp 4 -m 3072 \
+              -bios "$fw" -cdrom result/iso/*.iso -boot d -display none -serial file:boot.log -monitor none &
+          qemu=$!
+          for i in $(seq 1 150); do
+            sleep 10
+            if grep -aqE 'Installer.*build' boot.log && grep -aq 'English' boot.log; then echo "the installer is up after $((i*10)) s"; break; fi
+            if ! kill -0 $qemu 2>/dev/null; then echo "QEMU exited"; break; fi
+          done
+          kill $qemu 2>/dev/null || true
+          echo "--- last lines of the serial console ---"
+          tail -c 4000 boot.log | tr -cd '[:print:]\n' | tail -40
+          grep -aqE 'Installer.*build' boot.log && grep -aq 'English' boot.log
+
+      # The whole installation, unattended, on a virtual disk; then the
+      # installed system is booted and its screen photographed.
+      - name: Install SnapOS in QEMU and boot the installed system
+        timeout-minutes: 300
+        run: |
+          fwdir=$(nix --extra-experimental-features 'nix-command flakes' build --inputs-from . nixpkgs#OVMF.fd --no-link --print-out-paths | head -1)
+          fw="$fwdir/FV/QEMU_EFI.fd"
+          mkdir -p answers
+          printf 'LANG=en\nKEYMAP=us\nLOCALE=en_US.UTF-8\nTIMEZONE=UTC\nDISK=vda\nUSERNAME=tester\nPASSWORD=tester\nHOSTNAME=snapos\nDESKTOP=budgie\nLOOK=dark\nGRAPHICS=auto\n' > answers/snapos-answers.env
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#xorriso --command \
+            xorriso -as mkisofs -quiet -V SNAPOS_ANSWERS -o answers.iso answers
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command qemu-img create -f qcow2 disk.qcow2 16G
+          echo "== installing (unattended)"
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command \
+            qemu-system-aarch64 -M virt -accel tcg -cpu cortex-a72 -smp 4 -m 3072 -bios "$fw" \
+              -drive file=disk.qcow2,if=virtio -cdrom result/iso/*.iso \
+              -device qemu-xhci -drive file=answers.iso,if=none,id=answers,format=raw,readonly=on -device usb-storage,drive=answers \
+              -boot d -nic user,model=virtio -display none -serial file:install.log -monitor none -no-reboot &
+          qemu=$!
+          for i in $(seq 1 540); do
+            sleep 30
+            if grep -aq 'SNAPOS-INSTALL-OK' install.log; then echo "installed after $((i/2)) min"; break; fi
+            if grep -aq 'SNAPOS-INSTALL-FAILED' install.log; then echo "the installer failed"; break; fi
+            if ! kill -0 $qemu 2>/dev/null; then echo "QEMU exited"; break; fi
+            [ $((i % 10)) -eq 0 ] && echo "... $((i/2)) min: $(tail -c 300 install.log | tr -cd '[:print:]' | tail -c 120)"
+          done
+          kill $qemu 2>/dev/null; wait $qemu 2>/dev/null || true
+          grep -aq 'SNAPOS-INSTALL-OK' install.log || { echo "--- installer log ---"; tail -c 6000 install.log | tr -cd '[:print:]\n'; exit 1; }
+          echo "== booting the installed system"
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command \
+            qemu-system-aarch64 -M virt -accel tcg -cpu cortex-a72 -smp 4 -m 3072 -bios "$fw" \
+              -drive file=disk.qcow2,if=virtio -device virtio-gpu-pci -device qemu-xhci -device usb-kbd -device usb-tablet \
+              -nic user,model=virtio -display none -serial file:boot2.log -monitor unix:mon.sock,server,nowait -no-reboot &
+          qemu=$!
+          for i in $(seq 1 80); do
+            sleep 15
+            if grep -aq 'snapos login:' boot2.log; then echo "the installed system is up after $((i*15)) s"; break; fi
+            if ! kill -0 $qemu 2>/dev/null; then echo "QEMU exited"; break; fi
+          done
+          sleep 90
+          python3 - <<'PY'
+          import socket, time
+          s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect("mon.sock")
+          time.sleep(1); s.recv(4096)
+          s.sendall(b"screendump installed.ppm\n"); time.sleep(5); s.recv(4096)
+          PY
+          kill $qemu 2>/dev/null; wait $qemu 2>/dev/null || true
+          nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#imagemagick --command magick installed.ppm installed.png || true
+          echo "--- last lines of the installed system's console ---"
+          tail -c 3000 boot2.log | tr -cd '[:print:]\n' | tail -30
+          grep -aq 'snapos login:' boot2.log
+
+      - name: Keep the boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-boot-log-run${{ github.run_number }}
+          path: |
+            boot.log
+            install.log
+            boot2.log
+            installed.png
+          if-no-files-found: ignore
+
+      - name: Which build is this? (job summary)
+        run: |
+          {
+            echo "### SnapOS installer ISO for ARM64 — run #${{ github.run_number }}"
+            echo ""
+            echo "- commit: \`${GITHUB_SHA::7}\` — $(git log -1 --pretty=%s)"
+            echo "- release: \`${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-arm-{0}', github.run_number) }}\` (draft)"
+            echo "- sha256: \`$(sha256sum result/iso/*.iso | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # A draft release holds the plain .iso file (an Actions artifact would be
+      # wrapped in a zip). Only the repository owner sees drafts.
+      - name: Attach the ISO to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp result/iso/*.iso snapos-installer-aarch64.iso
+          sha256sum snapos-installer-aarch64.iso > snapos-installer-aarch64.iso.sha256
+          # the source package that `snapos update` installs, with its checksum
+          git archive --format=tar.gz --prefix=snapos/ -o snapos-source.tar.gz "$GITHUB_SHA"
+          sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256
+          # how the release describes itself to `snapos update` (no GitHub API needed)
+          printf 'commit=%s\nversion=%s\nname=SnapOS installer V%s\ndate=%s\n' \
+            "$GITHUB_SHA" "$(cat VERSION)" "$(cat VERSION)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > snapos-release.txt
+          tag="${{ github.event.inputs.iso_name != '' && github.event.inputs.iso_name || format('iso-arm-{0}', github.run_number) }}"
+          gh release create "$tag" --draft --target "$GITHUB_SHA" \
+            --title "SnapOS installer ARM64 ${GITHUB_SHA::7}" \
+            --notes "Draft. Built by run #${{ github.run_number }} from commit ${GITHUB_SHA::7}. Flash with balenaEtcher." \
+            snapos-installer-aarch64.iso snapos-installer-aarch64.iso.sha256 snapos-source.tar.gz snapos-source.tar.gz.sha256 snapos-release.txt

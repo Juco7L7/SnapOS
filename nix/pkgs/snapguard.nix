@@ -28,6 +28,6 @@ stdenv.mkDerivation {
   meta = {
     description = "SnapGuard, the SnapOS antivirus window";
     mainProgram = "snapguard-gui";
-    platforms = [ "x86_64-linux" ];
+    platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
 }

@@ -39,44 +39,47 @@
         });
       };
 
-      pkgs = import nixpkgs { inherit system; overlays = [ snaposOverlay ]; };
+      # SnapOS is built for x86_64 (PCs) and aarch64 (ARM64 computers with UEFI).
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forAll = f: nixpkgs.lib.genAttrs systems f;
+      mkPkgs = sys: import nixpkgs { system = sys; overlays = [ snaposOverlay ]; };
+      mkSystem = sys: modules: nixpkgs.lib.nixosSystem {
+        system = sys;
+        specialArgs = { inherit self; };
+        modules = [ { nixpkgs.overlays = [ snaposOverlay ]; } ] ++ modules;
+      };
+      pkgs = mkPkgs system;
     in
     {
       nixosConfigurations = {
-        snapos = nixpkgs.lib.nixosSystem {
-          inherit system;
-          modules = [
-            { nixpkgs.overlays = [ snaposOverlay ]; }
-            ./configuration.nix
-          ];
-        };
-
+        snapos = mkSystem "x86_64-linux" [ ./configuration.nix ];
         # The same system with the light appearance, so CI builds both.
         snapos-light = self.nixosConfigurations.snapos.extendModules {
           modules = [ { snapos.appearance = "light"; } ];
         };
+        snapos-installer = mkSystem "x86_64-linux" [ ./nix/iso.nix ];
 
-        snapos-installer = nixpkgs.lib.nixosSystem {
-          inherit system;
-          specialArgs = { inherit self; };
-          modules = [
-            { nixpkgs.overlays = [ snaposOverlay ]; }
-            ./nix/iso.nix
-          ];
+        # ARM64: the installer and `snapos rebuild` pick these on an aarch64 computer.
+        snapos-aarch64 = mkSystem "aarch64-linux" [ ./configuration.nix ];
+        snapos-aarch64-light = self.nixosConfigurations.snapos-aarch64.extendModules {
+          modules = [ { snapos.appearance = "light"; } ];
         };
+        snapos-installer-aarch64 = mkSystem "aarch64-linux" [ ./nix/iso.nix ];
       };
 
-      packages.${system} = {
-        snapos-tools = pkgs.snapos-tools;
-        debootstrap = pkgs.debootstrap;
-        iso = self.nixosConfigurations.snapos-installer.config.system.build.isoImage;
-        toplevel = self.nixosConfigurations.snapos.config.system.build.toplevel;
-        toplevel-light = self.nixosConfigurations.snapos-light.config.system.build.toplevel;
-        default = pkgs.snapos-tools;
-      };
+      # `nix build .#iso` builds the image of the machine it runs on.
+      packages = forAll (sys:
+        let p = mkPkgs sys; a = if sys == "aarch64-linux" then "-aarch64" else ""; in {
+          snapos-tools = p.snapos-tools;
+          debootstrap = p.debootstrap;
+          iso = self.nixosConfigurations."snapos-installer${a}".config.system.build.isoImage;
+          toplevel = self.nixosConfigurations."snapos${a}".config.system.build.toplevel;
+          toplevel-light = self.nixosConfigurations."snapos${a}-light".config.system.build.toplevel;
+          default = p.snapos-tools;
+        });
 
       checks.${system} = import ./nix/tests/desktop.nix { inherit pkgs; };
 
-      devShells.${system}.default = pkgs.mkShell { packages = [ pkgs.gcc pkgs.gnumake ]; };
+      devShells = forAll (sys: { default = (mkPkgs sys).mkShell { packages = with (mkPkgs sys); [ gcc gnumake ]; }; });
     };
 }

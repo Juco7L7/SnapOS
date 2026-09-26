@@ -35,6 +35,6 @@ stdenv.mkDerivation {
   meta = {
     description = "SnapHelper, the first-boot tour of SnapOS";
     mainProgram = "snaphelper";
-    platforms = [ "x86_64-linux" ];
+    platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
 }

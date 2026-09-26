@@ -222,7 +222,8 @@ GUARD
     chmod +x "$TMP/fakeguard/snapguard"
     export SNAPOS_NIX_DIR="$TMP/nixdeb"
     mkdir -p "$SNAPOS_NIX_DIR"
-    sd() { env PATH="$TMP/fakeguard:$PATH" "$D" "$@"; }
+    # the test packages are amd64 whatever computer runs the tests
+    sd() { env SNAPDEB_ARCH="${SNAPDEB_ARCH:-amd64}" PATH="$TMP/fakeguard:$PATH" "$D" "$@"; }
 
     out="$(sd info "$TMP/deb/hello-snap_1.0_amd64.deb" 2>&1)"
     check "info shows the package" bash -c "printf '%s' \"\$1\" | grep -q 'hello-snap'" _ "$out"
@@ -230,6 +231,10 @@ GUARD
     check_eq "a file that is not a .deb is refused" "2" "$?"
     sd add "$TMP/deb/hello-snap_1.0_arm64.deb" >/dev/null 2>&1
     check_eq "a package for another architecture is refused" "2" "$?"
+    SNAPDEB_ARCH=arm64 sd add "$TMP/deb/hello-snap_1.0_amd64.deb" >/dev/null 2>&1
+    check_eq "on an ARM64 computer an amd64 package is the foreign one" "2" "$?"
+    out="$(SNAPDEB_ARCH=arm64 sd add "$TMP/deb/hello-snap_1.0_amd64.deb" 2>&1)"
+    check "and the message names arm64" bash -c "printf '%s' \"\$1\" | grep -q 'not for this computer (arm64)'" _ "$out"
 
     sd add "$TMP/deb/hello-snap_1.0_amd64.deb" >/dev/null 2>&1
     check_eq "add succeeds when the scan is clean" "0" "$?"
@@ -367,7 +372,7 @@ printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/s
 printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
 chmod +x "$U/bin"/*
 printf 'VERSION_ID="2.0"\n' > "$U/os-release"
-up() { env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+up() { env PATH="$U/bin:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
 out="$(up update check 2>&1)"; rc=$?
 check_eq "check reports a newer release with exit 10" "10" "$rc"
 check "check prints the tag, the commit and the notes" bash -c "printf '%s' \"\$1\" | grep -q '^tag V2.1' && printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
@@ -473,13 +478,26 @@ check "snapupdate is built with SnapHelper" bash -c "grep -q 'bin/snapupdate' '$
 check "snapupdate is in the menu" grep -q '^Exec=snapupdate$' "$ROOT/branding/snapupdate.desktop"
 
 section "version"
-check "the repository has a VERSION file" bash -c "grep -qE '^[0-9]+\.[0-9]+$' '$ROOT/VERSION'"
+check "the repository has a VERSION file" bash -c "grep -qE '^[0-9]+(\.[0-9]+)+$' '$ROOT/VERSION'"
 check "os-release names the SnapOS version" bash -c "grep -q 'PRETTY_NAME=\"SnapOS \${snaposVersion}\"' '$ROOT/nix/modules/snapos.nix' && grep -q 'ID_LIKE=nixos' '$ROOT/nix/modules/snapos.nix'"
 
 section "/etc/snapos"
 INSTALLER="$ROOT/nix/installer/snap-install-nixos.sh"
 check "the tools look in /etc/snapos first" bash -c "for f in snapos snapctl snap-deb snapconfig; do grep -q '\"/etc/snapos' '$ROOT/src/'\$f.c || exit 1; done"
-check "the installer writes the system to /etc/snapos" bash -c "grep -q 'path:/mnt/etc/snapos#snapos' '$INSTALLER' && ! grep -q 'cp -a /etc/snapos-src/. /mnt/etc/nixos' '$INSTALLER'"
+check "the installer writes the system to /etc/snapos" bash -c "grep -q 'path:/mnt/etc/snapos#\$FLAKE_ATTR' '$INSTALLER' && ! grep -q 'cp -a /etc/snapos-src/. /mnt/etc/nixos' '$INSTALLER'"
+section "ARM64"
+check "the flake has the ARM64 system and installer" bash -c "grep -q 'snapos-aarch64 = mkSystem \"aarch64-linux\"' '$ROOT/flake.nix' && grep -q 'snapos-installer-aarch64 = mkSystem \"aarch64-linux\"' '$ROOT/flake.nix'"
+check "the installer picks the ARM64 system and boots it by UEFI" bash -c "grep -q 'FLAKE_ATTR=snapos-aarch64' '$INSTALLER' && grep -q 'GRUB_DEVICE=nodev' '$INSTALLER'"
+check "the tools are built for both architectures" bash -c "grep -q 'aarch64-linux' '$ROOT/nix/pkgs/snapos-tools.nix' && grep -q 'aarch64-linux' '$ROOT/nix/pkgs/snapguard.nix' && grep -q 'aarch64-linux' '$ROOT/nix/pkgs/snaphelper.nix'"
+check "CI builds the ARM64 image" grep -q 'ubuntu-24.04-arm' "$ROOT/.github/workflows/build-nixos-iso-arm.yml"
+check "CI installs SnapOS in a VM on ARM64 and boots it" bash -c "grep -q 'SNAPOS-INSTALL-OK' '$ROOT/.github/workflows/build-nixos-iso-arm.yml' && grep -q 'snapos login:' '$ROOT/.github/workflows/build-nixos-iso-arm.yml'"
+section "unattended install"
+check "the installer reads answers from a SNAPOS_ANSWERS disk" bash -c "grep -q 'by-label/SNAPOS_ANSWERS' '$INSTALLER' && grep -q 'snapos-answers.env' '$INSTALLER'"
+check "every question has an answer key" bash -c "for k in LANG KEYMAP LOCALE TIMEZONE DISK USERNAME PASSWORD HOSTNAME DESKTOP LOOK GRAPHICS; do grep -q \"A_\$k\" '$INSTALLER' || exit 1; done"
+check "the unattended install confirms and restarts by itself" bash -c "grep -q 'CONFIRM=SAVE' '$INSTALLER' && grep -q 'SNAPOS-INSTALL-OK' '$INSTALLER'"
+check "an unattended install does not wait at the welcome screen" grep -q '\[ "\$UNATTENDED" = 1 \] || read -r _' "$INSTALLER"
+out="$(SNAPOS_FLAKE_ATTR= env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_UPDATE_WEB="file://$U/web" SNAPOS_OS_RELEASE="$U/os-release" SNAPOS_STATE_DIR="$U/state" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 "$BIN/snapos" update 2>&1)"
+check "the checklist names this computer's architecture" bash -c "printf '%s' \"\$1\" | grep -q 'Architecture: $(uname -m)'" _ "$out"
 check "the installer links /etc/nixos and records the release" bash -c "grep -q 'ln -s snapos /mnt/etc/nixos' '$INSTALLER' && grep -q 'snapos-build /mnt/etc/snapos/release' '$INSTALLER'"
 check "the module links /etc/nixos to /etc/snapos" grep -q '"L /etc/nixos - - - - /etc/snapos"' "$ROOT/nix/modules/snapos.nix"
 check "the Debian layer gets Debian's updates" grep -q 'snap-deb upgrade' "$ROOT/src/snap-deb.c"
