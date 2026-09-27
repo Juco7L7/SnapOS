@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   desktop-test:
+    # builds and tests run in the staging repository only
+    if: github.repository == 'Juco7L7/snapos-test'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -2,6 +2,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <ctype.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,7 +132,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) { perror("snapos"); return; }
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB,SNAPOS_FLAKE_ATTR,SNAPDEB_ARCH";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB,SNAPOS_FLAKE_ATTR,SNAPDEB_ARCH,SNAPOS_NIXPKGS_URL,SNAPOS_PKG_MIN_DAYS";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snapos: needs root, asking sudo...\n");
@@ -526,8 +528,65 @@ static int update_state(const char *cur, const Release *r, char *pending, size_t
     return 0;
 }
 
-/* Prints what a caller (the login check) needs. Exit 10 = update available,
- * 11 = built, restart to use it. */
+/* ---- packages ------------------------------------------------------------
+ * Every program, the desktop and the kernel come from one package set
+ * (nixpkgs), pinned in flake.lock. A SnapOS release brings the pin it was
+ * built with; between releases the pin is moved forward on its own branch
+ * (nixos-26.05), which is how the desktop and the programs get their fixes. */
+typedef struct { char rev[64], ref[64]; long modified; } Lock;
+
+static int read_lock(const char *dir, Lock *l) {
+    char p[PATH_MAX + 16];
+    memset(l, 0, sizeof *l);
+    snprintf(p, sizeof p, "%s/flake.lock", dir);
+    char *json = slurp(p);
+    if (!json) return 0;
+    const char *node = strstr(json, "\"nixpkgs\": {");
+    const char *locked = node ? strstr(node, "\"locked\"") : NULL;
+    const char *orig = node ? strstr(node, "\"original\"") : NULL;
+    if (locked) {
+        json_string(locked, "rev", l->rev, sizeof l->rev);
+        const char *m = strstr(locked, "\"lastModified\"");
+        if (m && (m = strchr(m, ':'))) l->modified = atol(m + 1);
+    }
+    if (orig) json_string(orig, "ref", l->ref, sizeof l->ref);
+    free(json);
+    for (const char *c = l->ref; *c; c++)
+        if (!isalnum((unsigned char)*c) && !strchr("._-", *c)) { l->ref[0] = 0; break; }
+    return l->rev[0] && l->ref[0];
+}
+
+/* The newest revision of the branch, asked from git (no GitHub API). */
+static int newest_packages(const Lock *l, char *rev, size_t n) {
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "git ls-remote %s refs/heads/%s 2>/dev/null",
+             env_or("SNAPOS_NIXPKGS_URL", "https://github.com/NixOS/nixpkgs"), l->ref);
+    const char *url = env_or("SNAPOS_NIXPKGS_URL", "");
+    for (const char *c = url; *c; c++) if (strchr("'\"`$;&|<> ", *c)) return 0;
+    FILE *f = popen(cmd, "r");
+    if (!f) return 0;
+    char line[256] = "";
+    if (!fgets(line, sizeof line, f)) line[0] = 0;
+    pclose(f);
+    size_t k = strspn(line, "0123456789abcdef");
+    if (k < 40) return 0;
+    snprintf(rev, n, "%.40s", line);
+    return 1;
+}
+
+/* 1 = newer packages exist and the ones here are old enough to be worth it. */
+static int packages_available(char *newest, size_t n, Lock *l) {
+    newest[0] = 0;
+    if (!read_lock(nixdir(), l)) return 0;
+    if (!newest_packages(l, newest, n)) return -1;
+    if (!strcmp(newest, l->rev)) return 0;
+    long days = atol(env_or("SNAPOS_PKG_MIN_DAYS", "7"));
+    if (l->modified > 0 && time(NULL) - l->modified < days * 86400L) return 0;
+    return 1;
+}
+
+/* Prints what a caller (the login check) needs. Exit 10 = a newer release,
+ * 11 = built, restart to use it, 12 = newer packages (desktop, programs). */
 static int cmd_update_check(void) {
     Release r;
     char cur[128], pending[256], run[64];
@@ -540,8 +599,13 @@ static int cmd_update_check(void) {
     version_of(nixdir(), ver, sizeof ver);
     running_version(run, sizeof run);
     int st = update_state(cur, &r, pending, sizeof pending);
-    printf("tag %s\nversion %s\nrunning %s\ncurrent %.7s\nlatest %.7s\nname %s\nstate %s\nnotes\n%s\n", r.tag, ver, run, cur, r.sha, r.name,
-           st == 0 ? "current" : st == 10 ? "available" : "built", r.notes);
+    char newest[64];
+    Lock l;
+    int pk = packages_available(newest, sizeof newest, &l);
+    if (st == 0 && pk == 1) st = 12;
+    printf("tag %s\nversion %s\nrunning %s\ncurrent %.7s\nlatest %.7s\nname %s\nstate %s\npackages %s\nnotes\n%s\n", r.tag, ver, run, cur, r.sha, r.name,
+           st == 0 ? "current" : st == 10 ? "available" : st == 12 ? "packages" : "built",
+           pk == 1 ? "available" : pk == 0 ? "current" : "unknown", r.notes);
     return st;
 }
 
@@ -570,7 +634,9 @@ static int cmd_version(void) {
     installed_commit(cur, sizeof cur);
     installed_date(date, sizeof date);
     version_of(nixdir(), ver, sizeof ver);
-    printf("SnapOS V%s (build %.7s%s%.10s)\n", ver, cur, date[0] ? ", released " : "", date);
+    struct utsname u;
+    const char *arm = (uname(&u) == 0 && !strcmp(u.machine, "aarch64")) ? " ARM" : "";
+    printf("SnapOS V%s%s (build %.7s%s%.10s)\n", ver, arm, cur, date[0] ? ", released " : "", date);
     return 0;
 }
 
@@ -619,7 +685,8 @@ static int copy_keep(const char *from, const char *to) {
 }
 
 /* The checklist. Everything here is looked at before anything changes. */
-static int preflight(const Release *r, int force) {
+/* The computer itself: its architecture and the room in /nix. */
+static int machine_checks(void) {
     char line[512];
     int ok = 1;
     struct utsname u;
@@ -627,8 +694,10 @@ static int preflight(const Release *r, int force) {
     else if (strcmp(u.machine, "x86_64") != 0 && strcmp(u.machine, "aarch64") != 0) {
         snprintf(line, sizeof line, "This computer is %s; SnapOS is built for x86_64 and aarch64.", u.machine);
         ufail(line); ok = 0;
-    } else { snprintf(line, sizeof line, "Architecture: %s", u.machine); uok(line); }
-
+    } else {
+        snprintf(line, sizeof line, "Architecture: %s (the system is built for this computer)", u.machine);
+        uok(line);
+    }
     const char *where = getenv("SNAPOS_NIX_DIR") ? target_dir() : "/nix";
     struct statvfs vfs;
     long need_mb = atol(env_or("SNAPOS_MIN_FREE_MB", "4000"));
@@ -637,6 +706,12 @@ static int preflight(const Release *r, int force) {
         snprintf(line, sizeof line, "Free space: %ld MB on %s (needs %ld MB)", free_mb, where, need_mb);
         if (free_mb < need_mb) { ufail(line); ok = 0; } else uok(line);
     }
+    return ok;
+}
+
+static int preflight(const Release *r, int force) {
+    char line[512];
+    int ok = machine_checks();
 
     char date[64];
     if (installed_date(date, sizeof date) && r->date[0] && strcmp(r->date, date) < 0) {
@@ -720,6 +795,73 @@ static int write_pending(int previous, int attempts, const char *name) {
     return 1;
 }
 
+static void offer_restart(void) {
+    if (isatty(0) && !getenv("SNAPOS_NO_REBOOT")) {
+        printf("\n  Restart now? [y/N] ");
+        fflush(stdout);
+        char buf[16];
+        if (fgets(buf, sizeof buf, stdin) && (buf[0] == 'y' || buf[0] == 'Y')) {
+            char *reboot[] = { "systemctl", "reboot", NULL };
+            run(reboot);
+        }
+    }
+}
+
+/* Newer packages for the same SnapOS release: the desktop, the programs and
+ * the kernel. Built for the next start, with the same one-try guard. */
+static int cmd_update_packages(const char *newest, const Lock *l) {
+    char line[512];
+    const char *target = nixdir();
+    ustep = 1; uheader("Checking");
+    snprintf(line, sizeof line, "Packages here:   %.7s (%s)", l->rev, l->ref); uok(line);
+    snprintf(line, sizeof line, "Newest packages: %.7s", newest); uok(line);
+    if (!machine_checks()) { printf("\n  %sNothing was changed.%s\n", DIM, RST); return 1; }
+
+    ustep = 2; uheader("Updating the package list");
+    char olddir[PATH_MAX + 8], flake[PATH_MAX + 16];
+    snprintf(olddir, sizeof olddir, "%s.old", target);
+    snprintf(flake, sizeof flake, "path:%s", target);
+    int previous = current_generation();
+    char *rm_old[] = { "rm", "-rf", olddir, NULL };
+    run(rm_old);
+    char *keep[] = { "cp", "-a", (char *)target, olddir, NULL };
+    if (run(keep) != 0) { ufail("Could not keep a copy of the current files."); return 1; }
+    char *upd[] = { "nix", "--extra-experimental-features", "nix-command flakes",
+                    "flake", "update", "nixpkgs", "--flake", flake, NULL };
+    if (run(upd) != 0) {
+        ufail("The package list could not be updated. Nothing changed.");
+        char *rm_t[] = { "rm", "-rf", (char *)target, NULL };
+        run(rm_t);
+        rename(olddir, target);
+        return 1;
+    }
+    uok("The desktop, the programs and the kernel follow the newest list");
+
+    ustep = 3; uheader("Building the next system");
+    char *none[] = { NULL };
+    if (nixos_rebuild(target, "boot", 0, none, 0) != 0) {
+        ufail("The new system could not be built. Nothing changed: you are still on the current one.");
+        char *rm_t[] = { "rm", "-rf", (char *)target, NULL };
+        run(rm_t);
+        rename(olddir, target);
+        return 1;
+    }
+    write_pending(previous, 0, "package updates");
+    char rb[PATH_MAX];
+    rolled_back_path(rb, sizeof rb);
+    unlink(rb);
+    snprintf(line, sizeof line, "Built. Generation %d stays available; the new one boots next.", previous);
+    uok(line);
+    if (has_debs()) {
+        char *up[] = { "snap-deb", "upgrade", NULL };
+        if (run(up) == 0) uok("Debian layer security updates applied");
+    }
+    printf("\n  %s✓ The package updates are ready.%s Restart to use them.\n", GRN, RST);
+    printf("  %sIf the new system does not reach the login screen, SnapOS goes back to the\n  previous one by itself on the next start.%s\n", DIM, RST);
+    offer_restart();
+    return 0;
+}
+
 static int cmd_update(int force) {
     Release r;
     char cur[128], line[512];
@@ -733,7 +875,14 @@ static int cmd_update(int force) {
     snprintf(line, sizeof line, "Latest:    %s (%.7s)", r.name[0] ? r.name : r.tag, r.sha); uok(line);
     char pending[256], runver[64];
     int st = update_state(cur, &r, pending, sizeof pending);
-    if (st == 0) { printf("\n  %sSnapOS is up to date.%s\n", BLD, RST); return 0; }
+    if (st == 0) {
+        char newest[64];
+        Lock l;
+        int pk = packages_available(newest, sizeof newest, &l);
+        if (pk == 1) return cmd_update_packages(newest, &l);
+        printf("\n  %sSnapOS is up to date%s%s\n", BLD, pk == 0 ? ", and so are its packages." : ".", RST);
+        return 0;
+    }
     if (st == 11) {
         printf("\n  %s✓ SnapOS %s is already built%s and starts at the next boot.\n", GRN, pending, RST);
         if (isatty(0) && !getenv("SNAPOS_NO_REBOOT")) {
@@ -789,6 +938,14 @@ static int cmd_update(int force) {
 
     ustep = 3; uheader("Keeping your files");
     if (!copy_keep(old, newdir)) { ufail("Could not keep your files."); run(rm_new); return 1; }
+    Lock mine, theirs;
+    if (read_lock(old, &mine) && read_lock(newdir, &theirs) && !strcmp(mine.ref, theirs.ref) && mine.modified > theirs.modified) {
+        char a[PATH_MAX + 16], b[PATH_MAX + 24];
+        snprintf(a, sizeof a, "%s/flake.lock", old);
+        snprintf(b, sizeof b, "%s/flake.lock", newdir);
+        char *cp[] = { "cp", "-a", a, b, NULL };
+        if (run(cp) == 0) uok("Your packages are newer than the release's: they stay");
+    }
     uok("configuration.nix, hardware-configuration.nix, local.nix, graphics.nix, debs/");
     snprintf(check, sizeof check, "%s/configuration.nix.new", newdir);
     if (exists(check)) uwarn("This release changed the example configuration.nix; it is saved as configuration.nix.new.");

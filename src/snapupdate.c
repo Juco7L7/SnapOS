@@ -15,6 +15,7 @@ static struct {
     int autostart;
     int built;      /* the update is built already; a restart finishes it */
     int unknown;    /* the check could not reach GitHub */
+    int packages;   /* newer packages (desktop, programs), same SnapOS release */
 } app;
 
 static const char *CSS =
@@ -72,12 +73,12 @@ static int check(void) {
     /* at login the network may need a minute; a failed check is tried again */
     int tries = app.autostart ? 6 : 1;
     for (int i = 0; i < tries; i++) {
-        if (check_once(&out, &code) && (code == 0 || code == 10 || code == 11)) break;
+        if (check_once(&out, &code) && (code == 0 || code == 10 || code == 11 || code == 12)) break;
         g_free(out);
         out = NULL;
         if (i + 1 < tries) g_usleep(20 * G_USEC_PER_SEC);
     }
-    if (!out || (code != 0 && code != 10 && code != 11)) { app.unknown = 1; g_free(out); return 0; }
+    if (!out || (code != 0 && code != 10 && code != 11 && code != 12)) { app.unknown = 1; g_free(out); return 0; }
     char **lines = g_strsplit(out, "\n", -1);
     g_free(out);
     int in_notes = 0;
@@ -96,7 +97,8 @@ static int check(void) {
     g_strfreev(lines);
     g_strstrip(app.notes);
     if (code == 11) app.built = 1;
-    return code == 10 || code == 11;
+    if (code == 12) { app.packages = 1; app.notes[0] = 0; }
+    return code == 10 || code == 11 || code == 12;
 }
 
 /* The guard leaves a marker when it went back to the previous system. Each
@@ -178,6 +180,7 @@ static void build_window(int available) {
 
     char title[512];
     if (app.undone[0]) snprintf(title, sizeof title, "The update to %s was undone", app.undone);
+    else if (available && app.packages) snprintf(title, sizeof title, "Package updates are ready");
     else if (available && app.built) snprintf(title, sizeof title, "%s is installed", app.name[0] ? app.name : app.tag);
     else if (available) snprintf(title, sizeof title, "%s is ready", app.name[0] ? app.name : app.tag);
     else if (app.unknown) snprintf(title, sizeof title, "Could not check for updates");
@@ -189,6 +192,8 @@ static void build_window(int available) {
 
     GtkWidget *sub = gtk_label_new(app.undone[0]
         ? "The new system did not reach the login screen, so SnapOS went back to the previous one. Everything is as it was before the update. You can try again later with SnapOS Update."
+        : available && app.packages
+        ? "Newer versions of the desktop, the browser, the kernel and the other programs are available, with their security fixes. Installing keeps your files and settings, and the new system is used from the next restart. If it does not come up, SnapOS goes back to this one by itself."
         : available && app.built
         ? "The new release is built and starts at the next boot. Restart to use it. If it does not come up, SnapOS goes back to this one by itself."
         : available

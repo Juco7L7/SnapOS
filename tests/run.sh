@@ -347,6 +347,8 @@ printf '2.1\n' > "$U/src/snapos/VERSION"
 printf '2.0\n' > "$U/sys/VERSION"
 printf '# release template\n{ }\n' > "$U/src/snapos/configuration.nix"
 printf 'new\n' > "$U/src/snapos/README.md"
+printf '{ "nodes": { "nixpkgs": { "locked": { "lastModified": 1000, "rev": "1111111111111111111111111111111111111111" }, "original": { "ref": "nixos-26.05" } } } }\n' > "$U/src/snapos/flake.lock"
+printf '{ "nodes": { "nixpkgs": { "locked": { "lastModified": 2000, "rev": "2222222222222222222222222222222222222222" }, "original": { "ref": "nixos-26.05" } } } }\n' > "$U/sys/flake.lock"
 tar -czf "$U/archive/snapos-source.tar.gz" -C "$U/src" snapos
 (cd "$U/archive" && sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256)
 cat > "$U/api/releases/latest" <<JSON
@@ -370,6 +372,8 @@ printf '#!/bin/sh\necho "SNAPDEB $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/sna
 printf '#!/bin/sh\necho "NIXENV $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/nix-env"
 printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$U" > "$U/bin/systemctl"
 printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
+# the package list is the newest one here: these tests are about releases
+printf '#!/bin/sh\nprintf "2222222222222222222222222222222222222222\\trefs/heads/nixos-26.05\\n"\n' > "$U/bin/git"
 chmod +x "$U/bin"/*
 printf 'VERSION_ID="2.0"\n' > "$U/os-release"
 up() { env PATH="$U/bin:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
@@ -389,7 +393,7 @@ out="$(SNAPOS_UPDATE_API="file://$U/noapi" up update check 2>&1)"; rc=$?
 check_eq "without the file and without the API the check fails honestly" "1" "$rc"
 check "and says why" bash -c "printf '%s' \"\$1\" | grep -q 'could not read the latest release'" _ "$out"
 out="$(up version 2>&1)"
-check "version shows the SnapOS version, build and date" bash -c "printf '%s' \"\$1\" | grep -q 'SnapOS V2.0 (build abc1234, released 2026-09-01)'" _ "$out"
+check "version shows the SnapOS version, build and date" bash -c "printf '%s' \"\$1\" | grep -qE 'SnapOS V2.0( ARM)? \(build abc1234, released 2026-09-01\)'" _ "$out"
 printf '1.9\n' > "$U/src/snapos/VERSION"
 tar -czf "$U/archive/snapos-source.tar.gz" -C "$U/src" snapos
 (cd "$U/archive" && sha256sum snapos-source.tar.gz > snapos-source.tar.gz.sha256)
@@ -423,6 +427,7 @@ check "update replaces the system files" bash -c "[ -f '$U/sys/flake.nix' ] && g
 check "update keeps the user's configuration.nix" grep -q '^# mine' "$U/sys/configuration.nix"
 check "update keeps the release's example beside it" grep -q 'release template' "$U/sys/configuration.nix.new"
 check "update keeps local.nix, hardware and the debs" bash -c "[ -f '$U/sys/local.nix' ] && [ -f '$U/sys/hardware-configuration.nix' ] && [ -f '$U/sys/debs/hello-snap_1.0_amd64.deb' ]"
+check "a release does not bring older packages than the ones in use" grep -q 2222222222222222222222222222222222222222 "$U/sys/flake.lock"
 check "update brings the new VERSION" grep -q '^2.1' "$U/sys/VERSION"
 check "update records the new release with its date" bash -c "grep -q '^$NEWSHA' '$U/sys/release' && grep -q '2026-10-01' '$U/sys/release'"
 check "update leaves a pending marker with the previous generation" bash -c "grep -q '^previous=42' '$U/state/update-pending' && grep -q '^attempts=0' '$U/state/update-pending' && grep -q 'V2.1' '$U/state/update-pending'"
@@ -479,12 +484,64 @@ check "snapupdate is in the menu" grep -q '^Exec=snapupdate$' "$ROOT/branding/sn
 
 section "version"
 check "the repository has a VERSION file" bash -c "grep -qE '^[0-9]+(\.[0-9]+)+$' '$ROOT/VERSION'"
-check "os-release names the SnapOS version" bash -c "grep -q 'PRETTY_NAME=\"SnapOS \${snaposVersion}\"' '$ROOT/nix/modules/snapos.nix' && grep -q 'ID_LIKE=nixos' '$ROOT/nix/modules/snapos.nix'"
+check "os-release names the SnapOS version" bash -c "grep -q 'PRETTY_NAME=\"SnapOS \${snaposVersion}' '$ROOT/nix/modules/snapos.nix' && grep -q 'ID_LIKE=nixos' '$ROOT/nix/modules/snapos.nix'"
 
 section "/etc/snapos"
 INSTALLER="$ROOT/nix/installer/snap-install-nixos.sh"
 check "the tools look in /etc/snapos first" bash -c "for f in snapos snapctl snap-deb snapconfig; do grep -q '\"/etc/snapos' '$ROOT/src/'\$f.c || exit 1; done"
 check "the installer writes the system to /etc/snapos" bash -c "grep -q 'path:/mnt/etc/snapos#\$FLAKE_ATTR' '$INSTALLER' && ! grep -q 'cp -a /etc/snapos-src/. /mnt/etc/nixos' '$INSTALLER'"
+section "snapos update: packages"
+P="$TMP/pkg"
+mkdir -p "$P/sys" "$P/bin" "$P/state" "$P/profile/system-7-link/bin" "$P/api/releases" "$P/api/git/ref/tags" "$P/web"
+ln -s system-7-link "$P/profile/system"
+OLDREV="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; NEWREV="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+lock() { printf '{ "nodes": { "nixpkgs": { "locked": { "lastModified": %s, "owner": "NixOS", "repo": "nixpkgs", "rev": "%s", "type": "github" }, "original": { "owner": "NixOS", "ref": "nixos-26.05", "repo": "nixpkgs", "type": "github" } }, "root": { "inputs": { "nixpkgs": "nixpkgs" } } }, "root": "root", "version": 7 }\n' "$1" "$2"; }
+lock 1000000000 "$OLDREV" > "$P/sys/flake.lock"
+printf '{ }\n' > "$P/sys/flake.nix"
+printf '2.1\n' > "$P/sys/VERSION"
+printf '%s\n2026-10-01T00:00:00Z\nSnapOS installer V2.1\n' "$NEWSHA" > "$P/sys/release"
+printf 'VERSION_ID="2.1"\n' > "$P/os-release"
+cp "$U/api/releases/latest" "$P/api/releases/latest"
+cp "$U/api/git/ref/tags/V2.1" "$P/api/git/ref/tags/V2.1"
+printf '#!/bin/sh\necho "GIT $*" >> "%s/calls"\nprintf "%%s\\trefs/heads/nixos-26.05\\n" "${FAKE_NEWEST:-%s}"\n' "$P" "$NEWREV" > "$P/bin/git"
+printf '#!/bin/sh\necho "NIX $*" >> "%s/calls"\nexit ${FAKE_NIX_RC:-0}\n' "$P" > "$P/bin/nix"
+printf '#!/bin/sh\necho "REBUILD $*" >> "%s/calls"\nexit ${FAKE_REBUILD_RC:-0}\n' "$P" > "$P/bin/nixos-rebuild"
+printf '#!/bin/sh\necho "SYSTEMCTL $*" >> "%s/calls"\nexit 0\n' "$P" > "$P/bin/systemctl"
+chmod +x "$P/bin"/*
+pk() { env PATH="$P/bin:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_NIX_DIR="$P/sys" SNAPOS_UPDATE_API="file://$P/api" SNAPOS_UPDATE_WEB="file://$P/noweb" SNAPOS_OS_RELEASE="$P/os-release" SNAPOS_STATE_DIR="$P/state" SNAPOS_PROFILE="$P/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+out="$(pk update check 2>&1)"; rc=$?
+check_eq "newer packages are reported with exit 12" "12" "$rc"
+check "the check names the state and asked the right branch" bash -c "printf '%s' \"\$1\" | grep -q '^state packages' && printf '%s' \"\$1\" | grep -q '^packages available' && grep -q 'GIT ls-remote https://github.com/NixOS/nixpkgs refs/heads/nixos-26.05' '$P/calls'" _ "$out"
+FAKE_NEWEST="$OLDREV" pk update check >/dev/null 2>&1
+check_eq "the same package list: nothing to do" "0" "$?"
+lock "$(date +%s)" "$OLDREV" > "$P/sys/flake.lock"
+pk update check >/dev/null 2>&1
+check_eq "packages from this week are left alone" "0" "$?"
+lock 1000000000 "$OLDREV" > "$P/sys/flake.lock"
+out="$(FAKE_REBUILD_RC=1 pk update 2>&1)"; rc=$?
+check "a package update that does not build changes nothing" bash -c "[ $rc -ne 0 ] && [ ! -e '$P/state/update-pending' ] && [ ! -e '$P/sys.old' ] && grep -q '$OLDREV' '$P/sys/flake.lock'"
+: > "$P/calls"
+out="$(pk update 2>&1)"; rc=$?
+check_eq "the package update succeeds" "0" "$rc"
+check "it moves the package list forward on its branch" grep -q "NIX .*flake update nixpkgs --flake path:$P/sys" "$P/calls"
+check "it builds the next boot, not the running system" bash -c "grep -q 'REBUILD boot --flake path:$P/sys#snapos' '$P/calls' && ! grep -q 'REBUILD switch' '$P/calls'"
+check "it leaves the guard's marker and the previous files" bash -c "grep -q '^previous=7' '$P/state/update-pending' && grep -q 'name=package updates' '$P/state/update-pending' && [ -f '$P/sys.old/flake.lock' ]"
+check "the release it runs is unchanged" grep -q "^$NEWSHA" "$P/sys/release"
+pk update check >/dev/null 2>&1
+check_eq "until the restart the check says built (exit 11)" "11" "$?"
+printf 'previous=7\nattempts=1\nname=package updates\n' > "$P/state/update-pending"
+printf 'changed\n' > "$P/sys/marker"
+pk guard boot >/dev/null 2>&1
+check "a package update that does not start is undone, files and all" bash -c "[ ! -e '$P/sys/marker' ] && [ ! -e '$P/state/update-pending' ] && [ -e '$P/state/update-rolled-back' ]"
+check "the login window knows about package updates" bash -c "grep -q 'Package updates are ready' '$ROOT/src/snapupdate.c' && grep -q 'code == 12' '$ROOT/src/snapupdate.c'"
+check "on ARM64 the system is named SnapOS ... ARM" bash -c "grep -q 'isAarch64 \" ARM\"' '$ROOT/nix/modules/snapos.nix' && grep -q 'VARIANT_ID=arm64' '$ROOT/nix/modules/snapos.nix'"
+
+section "releases"
+check "builds and tests run in the staging repository only" bash -c "for w in desktop-test build-nixos-iso build-nixos-iso-arm snap-deb; do grep -q \"github.repository == 'Juco7L7/snapos-test'\" '$ROOT/.github/workflows/'\$w.yml || exit 1; done"
+check "the official draft is a copy of a tested build of the same commit" bash -c "grep -q 'test \"\$commit\" = \"\$GITHUB_SHA\"' '$ROOT/.github/workflows/draft-release.yml' && grep -q 'sha256sum -c' '$ROOT/.github/workflows/draft-release.yml' && grep -q -- '--draft' '$ROOT/.github/workflows/draft-release.yml'"
+check "both architectures of a release come from one commit" grep -q 'test "\$a" = "\$b"' "$ROOT/.github/workflows/collect-release.yml"
+check "this version has its release notes" test -s "$ROOT/docs/releases/$(cat "$ROOT/VERSION").md"
+
 section "ARM64"
 check "the flake has the ARM64 system and installer" bash -c "grep -q 'snapos-aarch64 = mkSystem \"aarch64-linux\"' '$ROOT/flake.nix' && grep -q 'snapos-installer-aarch64 = mkSystem \"aarch64-linux\"' '$ROOT/flake.nix'"
 check "the installer picks the ARM64 system and boots it by UEFI" bash -c "grep -q 'FLAKE_ATTR=snapos-aarch64' '$INSTALLER' && grep -q 'GRUB_DEVICE=nodev' '$INSTALLER'"

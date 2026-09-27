@@ -16,6 +16,8 @@ permissions:
 
 jobs:
   build-iso-arm:
+    # builds and tests run in the staging repository only
+    if: github.repository == 'Juco7L7/snapos-test'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,57 @@
+name: Draft a release
+
+# Official repository: copies a tested build from the staging repository into
+# a draft release here. Nothing is built; the owner publishes the draft.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: "Pre-release in Juco7L7/snapos-test to copy (e.g. v2.3.1)"
+        required: true
+      tag:
+        description: "Tag of the release here (e.g. ISO6)"
+        required: true
+      title:
+        description: "Title (e.g. SnapOS installer V2.3.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    if: github.repository != 'Juco7L7/snapos-test'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the tested files
+        run: |
+          base="https://github.com/Juco7L7/snapos-test/releases/download/${{ inputs.from_tag }}"
+          for f in snapos-installer.iso snapos-installer.iso.sha256 \
+                   snapos-installer-aarch64.iso snapos-installer-aarch64.iso.sha256 \
+                   snapos-source.tar.gz snapos-source.tar.gz.sha256 snapos-release.txt; do
+            curl -fsSL --retry 3 -o "$f" "$base/$f"
+          done
+          ls -l
+
+      - name: The files are whole and were built from this very commit
+        run: |
+          sha256sum -c snapos-installer.iso.sha256 snapos-installer-aarch64.iso.sha256 snapos-source.tar.gz.sha256
+          commit=$(sed -n 's/^commit=//p' snapos-release.txt)
+          echo "built from: $commit"; echo "this commit: $GITHUB_SHA"
+          test "$commit" = "$GITHUB_SHA"
+
+      - name: Create the draft
+        run: |
+          version=$(sed -n 's/^version=//p' snapos-release.txt)
+          notes="docs/releases/$version.md"
+          test -f "$notes"
+          gh release create "${{ inputs.tag }}" --draft --target "$GITHUB_SHA" \
+            --title "${{ inputs.title }}" --notes-file "$notes" \
+            snapos-installer.iso snapos-installer.iso.sha256 \
+            snapos-installer-aarch64.iso snapos-installer-aarch64.iso.sha256 \
+            snapos-source.tar.gz snapos-source.tar.gz.sha256 snapos-release.txt

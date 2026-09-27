@@ -20,6 +20,8 @@ permissions:
 
 jobs:
   debian-layer:
+    # builds and tests run in the staging repository only
+    if: github.repository == 'Juco7L7/snapos-test'
     runs-on: ubuntu-latest
     env:
       SNAPDEB_DIR: /var/lib/snapdeb

@@ -1,0 +1,55 @@
+name: Collect a release
+
+# Staging repository: gathers the tested x86_64 and ARM64 builds of one commit
+# into a single pre-release, which the official repository then copies.
+
+on:
+  workflow_dispatch:
+    inputs:
+      x86_tag:
+        description: "Draft with the x86_64 build"
+        required: true
+      arm_tag:
+        description: "Draft with the ARM64 build"
+        required: true
+      tag:
+        description: "Tag of the pre-release to create (e.g. v2.3.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    if: github.repository == 'Juco7L7/snapos-test'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download both builds
+        run: |
+          gh release download "${{ inputs.x86_tag }}" --repo "$GITHUB_REPOSITORY" \
+            -p snapos-installer.iso -p snapos-installer.iso.sha256 \
+            -p snapos-source.tar.gz -p snapos-source.tar.gz.sha256 -p snapos-release.txt
+          gh release download "${{ inputs.arm_tag }}" --repo "$GITHUB_REPOSITORY" \
+            -p snapos-installer-aarch64.iso -p snapos-installer-aarch64.iso.sha256
+          mkdir arm && gh release download "${{ inputs.arm_tag }}" --repo "$GITHUB_REPOSITORY" -p snapos-release.txt -D arm
+          ls -l
+
+      - name: Both builds are of the same commit, and the files are whole
+        run: |
+          sha256sum -c snapos-installer.iso.sha256 snapos-installer-aarch64.iso.sha256 snapos-source.tar.gz.sha256
+          a=$(sed -n 's/^commit=//p' snapos-release.txt); b=$(sed -n 's/^commit=//p' arm/snapos-release.txt)
+          echo "x86_64: $a"; echo "ARM64:  $b"
+          test -n "$a" && test "$a" = "$b"
+
+      - name: Create the pre-release
+        run: |
+          commit=$(sed -n 's/^commit=//p' snapos-release.txt)
+          version=$(sed -n 's/^version=//p' snapos-release.txt)
+          gh release create "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" --prerelease --target "$commit" \
+            --title "SnapOS $version (tested build, x86_64 and ARM64)" \
+            --notes "Tested build of commit ${commit::7}. The official release is made from these files." \
+            snapos-installer.iso snapos-installer.iso.sha256 \
+            snapos-installer-aarch64.iso snapos-installer-aarch64.iso.sha256 \
+            snapos-source.tar.gz snapos-source.tar.gz.sha256 snapos-release.txt

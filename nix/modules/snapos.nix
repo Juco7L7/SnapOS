@@ -83,7 +83,7 @@ in {
       ID_LIKE=nixos
       VERSION="${snaposVersion}"
       VERSION_ID="${snaposVersion}"
-      PRETTY_NAME="SnapOS ${snaposVersion}"
+      PRETTY_NAME="SnapOS ${snaposVersion}${optionalString pkgs.stdenv.hostPlatform.isAarch64 " ARM"}"${optionalString pkgs.stdenv.hostPlatform.isAarch64 "\nVARIANT=\"ARM64\"\nVARIANT_ID=arm64"}
       BUILD_ID="${config.system.nixos.version}"
       HOME_URL="https://github.com/Juco7L7/SnapOS"
       SUPPORT_URL="https://github.com/Juco7L7/SnapOS/issues"
@@ -171,7 +171,8 @@ in {
     environment.systemPackages =
       optionals config.services.xserver.enable ([ redTheme redIcons (hiPrio shieldIcons) ] ++ optional light lightTheme)
       ++ optional config.services.xserver.enable pkgs.snaphelper
-      ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg pkgs.libnotify ];
+      # git: the update check asks it for the newest package list
+      ++ [ pkgs.bubblewrap pkgs.debootstrap pkgs.dpkg pkgs.libnotify pkgs.git ];
 
     # SnapHelper's animations live in share/snapos; desktops that do not link
     # the whole share tree (Hyprland) still need it.

@@ -213,6 +213,21 @@ yourself at any time, and `snapos update check` only asks.
 The Wi-Fi network you chose in the installer is kept, so the installed system
 connects by itself and updates can download right away.
 
+**The desktop and the programs update too.** Between SnapOS releases the same
+check looks for newer packages on the NixOS branch SnapOS is built from: the
+desktop you chose (Budgie, Plasma, Xfce or Hyprland), the browser, the kernel
+and everything else, with their security fixes. When the packages here are
+more than a week old and newer ones exist, the login window offers **Package
+updates**; `snapos update` installs them the same safe way, for the next start
+and with the automatic way back. A later SnapOS release never brings older
+packages than the ones you already have.
+
+**One release for every computer.** An update does not download an image: it
+downloads the release's source and builds the system for the computer it runs
+on, so an x86_64 PC and an ARM64 computer update from the same release. On
+ARM64 the system calls itself `SnapOS 2.3.1 ARM` (in `snapos version`,
+`fastfetch` and `/etc/os-release`).
+
 ## Installing programs
 
 Programs are listed in `configuration.nix`:
