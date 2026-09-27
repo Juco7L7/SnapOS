@@ -56,9 +56,11 @@ jobs:
           accel=tcg; cpu=cortex-a72
           if [ -w /dev/kvm ]; then accel=kvm; cpu=host; fi
           echo "accelerator: $accel"
+          iso=$(ls result/iso/*.iso | head -1)
           nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command \
             qemu-system-aarch64 -M virt -accel "$accel" -cpu "$cpu" -smp 4 -m 3072 \
-              -bios "$fw" -cdrom result/iso/*.iso -boot d -display none -serial file:boot.log -monitor none &
+              -bios "$fw" -device virtio-scsi-pci -drive "file=$iso,if=none,id=cd,media=cdrom,readonly=on" -device scsi-cd,drive=cd \
+              -display none -serial file:boot.log -monitor none &
           qemu=$!
           for i in $(seq 1 150); do
             sleep 10
@@ -82,12 +84,14 @@ jobs:
           nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#xorriso --command \
             xorriso -as mkisofs -quiet -V SNAPOS_ANSWERS -o answers.iso answers
           nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command qemu-img create -f qcow2 disk.qcow2 16G
+          iso=$(ls result/iso/*.iso | head -1)
           echo "== installing (unattended)"
           nix --extra-experimental-features 'nix-command flakes' shell --inputs-from . nixpkgs#qemu --command \
             qemu-system-aarch64 -M virt -accel tcg -cpu cortex-a72 -smp 4 -m 3072 -bios "$fw" \
-              -drive file=disk.qcow2,if=virtio -cdrom result/iso/*.iso \
+              -drive file=disk.qcow2,if=virtio \
+              -device virtio-scsi-pci -drive "file=$iso,if=none,id=cd,media=cdrom,readonly=on" -device scsi-cd,drive=cd \
               -device qemu-xhci -drive file=answers.iso,if=none,id=answers,format=raw,readonly=on -device usb-storage,drive=answers \
-              -boot d -nic user,model=virtio -display none -serial file:install.log -monitor none -no-reboot &
+              -nic user,model=virtio -display none -serial file:install.log -monitor none -no-reboot &
           qemu=$!
           for i in $(seq 1 540); do
             sleep 30

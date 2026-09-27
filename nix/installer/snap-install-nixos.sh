@@ -717,14 +717,25 @@ parted -s "$TARGET" -- mklabel gpt \
     mkpart bios_boot 1MiB 2MiB set 1 bios_grub on \
     mkpart ESP fat32 2MiB 514MiB set 2 esp on \
     mkpart root ext4 514MiB 100% || die "$(t f_part)"
-partprobe "$TARGET" 2>/dev/null; sleep 2
+# the kernel and udev need a moment to see the new partitions; until they
+# are done the partitions are "busy"
+settle() { partprobe "$TARGET" 2>/dev/null; udevadm settle --timeout=30 2>/dev/null; sleep 2; }
+settle
 
 if [[ "$TARGET" =~ nvme|mmcblk ]]; then BOOTPART="${TARGET}p2"; ROOTPART="${TARGET}p3"
 else BOOTPART="${TARGET}2"; ROOTPART="${TARGET}3"; fi
 
 say "$(t i_fmt)..."
-mkfs.fat -F 32 -n BOOT "$BOOTPART" || die "$(t f_fmt "$BOOTPART")"
-mkfs.ext4 -F -L nixos "$ROOTPART" || die "$(t f_fmt "$ROOTPART")"
+# what an earlier system left at the same place on the disk is wiped first
+wipefs -a "$BOOTPART" "$ROOTPART" >/dev/null 2>&1; settle
+format() { # command...: tried again while the partition is still busy
+    local i
+    for i in 1 2 3 4 5; do "$@" && return 0; settle; done
+    return 1
+}
+format mkfs.fat -F 32 -n BOOT "$BOOTPART" || die "$(t f_fmt "$BOOTPART")"
+format mkfs.ext4 -F -L nixos "$ROOTPART" || die "$(t f_fmt "$ROOTPART")"
+settle
 
 say "$(t i_mount)..."
 mount "$ROOTPART" /mnt || die "$(t f_mount "$ROOTPART")"
