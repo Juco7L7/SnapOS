@@ -286,6 +286,24 @@ in {
     documentation.doc.enable = false;
     documentation.info.enable = false;
 
+    # `nix-env -i` looks like apt, but what it installs is not in the system
+    # description: rebuilds do not know it, updates skip it and it keeps disk
+    # space alive. The shell explains and offers the SnapOS way.
+    programs.bash.interactiveShellInit = ''
+      nix-env() {
+        case " $* " in
+          *" -i"*|*" --install"*)
+            echo "SnapOS: nix-env would install this outside your system description:"
+            echo "  rebuilds and updates would not know about it."
+            echo "    snapos add NAME      install it (declared, part of the system)"
+            echo "    snapos shell NAME    use it now without installing"
+            echo "  To use nix-env anyway: command nix-env $*"
+            return 1 ;;
+        esac
+        command nix-env "$@"
+      }
+    '';
+
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     nix.settings.auto-optimise-store = true;
     nix.gc = {

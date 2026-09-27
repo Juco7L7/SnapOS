@@ -62,18 +62,44 @@ static void usage(FILE *out) {
     fprintf(out,
         "snapos — manage this SnapOS system\n"
         "\n"
-        "  snapos config            open configuration.nix in $EDITOR (nano if unset)\n"
-        "  snapos rebuild [MODE]    apply the config; MODE = switch (default), test,\n"
-        "                           boot or dry-build. Extra args go to nixos-rebuild.\n"
-        "  snapos update [--force]  install the latest SnapOS release for the next boot\n"
-        "                           (keeps your files; --force allows an older release)\n"
-        "  snapos update check      is there a newer release? (exit 10 when there is)\n"
-        "  snapos version           the release this system runs\n"
-        "  snapos doctor            show graphics, boot and antivirus problems (GPU, failed units,\n"
-        "                           display manager and X errors)\n"
-        "  snapos help              this text\n"
+        "Programs\n"
+        "  snapos find NAME         search for a program\n"
+        "  snapos add NAME...       install: declare it and rebuild\n"
+        "  snapos remove NAME...    uninstall: take it out and rebuild\n"
+        "  snapos list              the programs this system declares\n"
+        "  snapos shell NAME...     use programs without installing (gone when you exit)\n"
+        "  snapos try NAME [ARGS]   run a program once without installing\n"
         "\n"
-        "Runs through sudo automatically when you are not root.\n");
+        "System\n"
+        "  snapos config            open configuration.nix in $EDITOR (nano if unset)\n"
+        "  snapos diff              what would change if you rebuilt now\n"
+        "  snapos rebuild           apply the configuration now\n"
+        "      --next-boot          apply it at the next start only (the safe way for\n"
+        "                           kernel, drivers and boot changes)\n"
+        "      --trace              show the full error when the build fails\n"
+        "  snapos rollback          go back to the system before the last rebuild\n"
+        "  snapos generations       the systems you can go back to\n"
+        "  snapos gc [--all]        free disk space: drop systems older than 14 days\n"
+        "                           (--all keeps only the current one)\n"
+        "  snapos log               the output of the last rebuild\n"
+        "  snapos doctor            graphics, boot, network and antivirus problems\n"
+        "\n"
+        "Updates\n"
+        "  snapos update [--force]  install the new release or the new packages for the\n"
+        "                           next start\n"
+        "  snapos update check      is there something new? (exit 10: a release,\n"
+        "                           12: packages)\n"
+        "  snapos version           the release this system runs\n"
+        "\n"
+        "Coming from a Debian-based distro\n"
+        "  apt search X       ->  snapos find X\n"
+        "  apt install X      ->  snapos add X\n"
+        "  apt remove X       ->  snapos remove X\n"
+        "  apt autoremove     ->  snapos gc\n"
+        "  apt upgrade        ->  snapos update\n"
+        "  a .deb file        ->  snap-deb FILE.deb\n"
+        "\n"
+        "Runs through sudo on its own when a command needs root.\n");
 }
 
 static int run(char *const argv[]) {
@@ -132,7 +158,7 @@ static void reexec_with_sudo(int argc, char **argv) {
     if (!nargv) { perror("snapos"); return; }
     int k = 0;
     nargv[k++] = "sudo";
-    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB,SNAPOS_FLAKE_ATTR,SNAPDEB_ARCH,SNAPOS_NIXPKGS_URL,SNAPOS_PKG_MIN_DAYS";
+    nargv[k++] = "--preserve-env=SNAPOS_NIX_DIR,SNAPOS_UPDATE_API,SNAPOS_STATE_DIR,SNAPOS_PROFILE,SNAPDEB_DIR,SNAPOS_OS_RELEASE,SNAPOS_UPDATE_WEB,SNAPOS_FLAKE_ATTR,SNAPDEB_ARCH,SNAPOS_REBUILD_LOG,SNAPOS_NIXPKGS_URL,SNAPOS_PKG_MIN_DAYS";
     nargv[k++] = self;
     for (int i = 1; i < argc; i++) nargv[k++] = argv[i];
     fprintf(stderr, "snapos: needs root, asking sudo...\n");
@@ -176,6 +202,29 @@ static int has_debs(void) {
     return n > 0 || access("/var/lib/snapdeb/installed", F_OK) == 0;
 }
 
+static const char *rebuild_log(void) { return env_or("SNAPOS_REBUILD_LOG", "/var/lib/snapos/rebuild.log"); }
+
+/* Runs the command with its output also kept in the rebuild log. */
+static int run_logged(char **argv) {
+    int n = 0;
+    while (argv[n]) n++;
+    char **full = calloc((size_t)n + 5, sizeof *full);
+    if (!full) return run(argv);
+    int k = 0;
+    full[k++] = "bash";
+    full[k++] = "-c";
+    /* a log that cannot be written must not fail the rebuild */
+    full[k++] = "set -o pipefail; mkdir -p \"$(dirname \"$SNAPOS_REBUILD_LOG_FILE\")\" 2>/dev/null;"
+                " \"$@\" 2>&1 | { tee \"$SNAPOS_REBUILD_LOG_FILE\" 2>/dev/null || cat; }";
+    full[k++] = "snapos";
+    for (int i = 0; i < n; i++) full[k++] = argv[i];
+    full[k] = NULL;
+    setenv("SNAPOS_REBUILD_LOG_FILE", rebuild_log(), 1);
+    int rc = run(full);
+    free(full);
+    return rc;
+}
+
 static int nixos_rebuild(const char *dir, const char *mode, int argc, char **argv, int extra) {
     char flake[PATH_MAX + 16];
     snprintf(flake, sizeof flake, "path:%s#%s", dir, flake_attr());
@@ -187,8 +236,9 @@ static int nixos_rebuild(const char *dir, const char *mode, int argc, char **arg
     nargv[k++] = "--flake";
     nargv[k++] = flake;
     for (int i = extra; i < argc; i++) nargv[k++] = argv[i];
+    nargv[k] = NULL;
     fprintf(stderr, "snapos: nixos-rebuild %s --flake %s\n\n", mode, flake);
-    int rc = run(nargv);
+    int rc = run_logged(nargv);
     free(nargv);
     return rc < 0 ? 1 : rc;
 }
@@ -203,11 +253,25 @@ static int cmd_rebuild(int argc, char **argv) {
                         "(use switch, test, boot or dry-build)\n", mode);
         return 2;
     }
-    int rc = nixos_rebuild(nixdir(), mode, argc, argv, extra);
+    /* the friendly names of two nixos-rebuild things */
+    char **pass = calloc((size_t)argc + 2, sizeof *pass);
+    if (!pass) return 1;
+    int n = 0;
+    for (int i = extra; i < argc; i++) {
+        if (!strcmp(argv[i], "--next-boot")) mode = "boot";
+        else if (!strcmp(argv[i], "--trace")) pass[n++] = "--show-trace";
+        else pass[n++] = argv[i];
+    }
+    int rc = nixos_rebuild(nixdir(), mode, n, pass, 0);
+    free(pass);
     if (rc != 0) {
-        fprintf(stderr, "snapos: nixos-rebuild failed (is this a NixOS/SnapOS system?)\n");
+        fprintf(stderr, "\nsnapos: the rebuild failed; the system was not changed.\n"
+                        "        snapos rebuild --trace   shows where the error comes from\n"
+                        "        snapos log               shows this output again\n");
         return rc;
     }
+    if (!strcmp(mode, "boot"))
+        fprintf(stderr, "\nsnapos: built. The new system starts at the next boot; what runs now is untouched.\n");
     if (strcmp(mode, "dry-build") != 0 && has_debs()) {
         fprintf(stderr, "\nsnapos: snap-deb sync\n\n");
         char *sync[] = { "snap-deb", "sync", NULL };
@@ -215,6 +279,173 @@ static int cmd_rebuild(int argc, char **argv) {
         if (rc != 0) fprintf(stderr, "snapos: the Debian layer is not up to date; see 'snap-deb status'\n");
     }
     return rc < 0 ? 1 : rc;
+}
+
+/* ---- the Nix commands people need, under plain names ---------------------- */
+
+#define NIX_FLAGS "--extra-experimental-features", "nix-command flakes"
+
+/* The system's own package set: the same versions the system is built from. */
+static void pkg_ref(char *dst, size_t n, const char *name) {
+    if (name) snprintf(dst, n, "path:%s#%s", nixdir(), name);
+    else snprintf(dst, n, "path:%s", nixdir());
+}
+
+static int cmd_find(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: snapos find NAME\n"); return 2; }
+    char ref[PATH_MAX + 16];
+    pkg_ref(ref, sizeof ref, NULL);
+    fprintf(stderr, "snapos: searching (the first search takes a minute)...\n\n");
+    char *sh[] = { "sh", "-c",
+        "nix --extra-experimental-features 'nix-command flakes' search \"$1\" \"$2\" 2>/dev/null"
+        " | sed -E 's/^\\* (legacyPackages|packages)\\.[A-Za-z0-9_-]+\\./* /'",
+        "snapos", ref, argv[2], NULL };
+    int rc = run(sh);
+    fprintf(stderr, "\n  install one with:  snapos add NAME      try one with:  snapos shell NAME\n");
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_shell(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: snapos shell NAME...\n"); return 2; }
+    char **nargv = calloc((size_t)argc + 6, sizeof *nargv);
+    if (!nargv) return 1;
+    int k = 0;
+    char *flags[] = { NIX_FLAGS };
+    nargv[k++] = "nix"; nargv[k++] = flags[0]; nargv[k++] = flags[1]; nargv[k++] = "shell";
+    for (int i = 2; i < argc; i++) {
+        char *ref = malloc(PATH_MAX + 128);
+        if (!ref) return 1;
+        pkg_ref(ref, PATH_MAX + 128, argv[i]);
+        nargv[k++] = ref;
+    }
+    nargv[k] = NULL;
+    fprintf(stderr, "snapos: a shell with");
+    for (int i = 2; i < argc; i++) fprintf(stderr, " %s", argv[i]);
+    fprintf(stderr, ". Nothing is installed: type exit and it is gone.\n\n");
+    int rc = run(nargv);
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_try(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: snapos try NAME [ARGS]\n"); return 2; }
+    char **nargv = calloc((size_t)argc + 8, sizeof *nargv);
+    if (!nargv) return 1;
+    char ref[PATH_MAX + 128];
+    pkg_ref(ref, sizeof ref, argv[2]);
+    char *flags[] = { NIX_FLAGS };
+    int k = 0;
+    nargv[k++] = "nix"; nargv[k++] = flags[0]; nargv[k++] = flags[1]; nargv[k++] = "run"; nargv[k++] = ref;
+    if (argc > 3) { nargv[k++] = "--"; for (int i = 3; i < argc; i++) nargv[k++] = argv[i]; }
+    nargv[k] = NULL;
+    int rc = run(nargv);
+    free(nargv);
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_list(void) {
+    char *argv[] = { "snapctl", "status", NULL };
+    int rc = run(argv);
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_diff(void) {
+    char tmpl[PATH_MAX];
+    const char *base = getenv("XDG_RUNTIME_DIR");
+    if (!base || !*base) base = getenv("TMPDIR");
+    if (!base || !*base) base = "/var/tmp";
+    snprintf(tmpl, sizeof tmpl, "%s/snapos-diff-XXXXXX", base);
+    if (!mkdtemp(tmpl)) { perror("snapos"); return 1; }
+    char flake[PATH_MAX + 16];
+    snprintf(flake, sizeof flake, "path:%s#%s", nixdir(), flake_attr());
+    fprintf(stderr, "snapos: building what the configuration describes (nothing is applied)...\n\n");
+    char *sh[] = { "sh", "-c",
+        "cd \"$1\" && nixos-rebuild build --flake \"$2\" && echo"
+        " && nix --extra-experimental-features 'nix-command flakes' store diff-closures \"$3\" ./result"
+        " && echo && echo '  (nothing listed above = nothing would change)'; rc=$?; rm -rf \"$1\"; exit $rc",
+        "snapos", tmpl, flake, (char *)env_or("SNAPOS_CURRENT_SYSTEM", "/run/current-system"), NULL };
+    int rc = run(sh);
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_generations(void) {
+    char *argv[] = { "nixos-rebuild", "list-generations", NULL };
+    int rc = run(argv);
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_rollback(void) {
+    fprintf(stderr, "snapos: going back to the system before the last rebuild...\n\n");
+    char *argv[] = { "nixos-rebuild", "switch", "--rollback", NULL };
+    int rc = run_logged(argv);
+    if (rc == 0)
+        fprintf(stderr, "\nsnapos: back on the previous system. Your files in %s still hold the change\n"
+                        "        that was undone: fix it (snapos config) before the next rebuild.\n", nixdir());
+    return rc < 0 ? 1 : rc;
+}
+
+static int cmd_log(void) {
+    if (!exists(rebuild_log())) { fprintf(stderr, "snapos: no rebuild has been logged yet\n"); return 1; }
+    char *argv[] = { "cat", (char *)rebuild_log(), NULL };
+    int rc = run(argv);
+    return rc < 0 ? 1 : rc;
+}
+
+static int read_pending(int *previous, int *attempts, char *name, size_t n);
+static const char *profile_link(void);
+
+static int cmd_gc(int all) {
+    int previous, attempts;
+    char name[256];
+    if (all && read_pending(&previous, &attempts, name, sizeof name)) {
+        fprintf(stderr, "snapos: an update (%s) still waits for its first start; the previous system\n"
+                        "        is kept until then. Restart first, or run snapos gc without --all.\n", name);
+        return 1;
+    }
+    struct statvfs before, after;
+    int have = statvfs("/nix", &before) == 0;
+    char *old[] = { "nix-collect-garbage", "--delete-older-than", "14d", NULL };
+    char *every[] = { "nix-collect-garbage", "-d", NULL };
+    int rc = run(all ? every : old);
+    if (rc != 0) return rc < 0 ? 1 : rc;
+    /* the boot menu lists the systems that still exist */
+    char stc[PATH_MAX + 32];
+    snprintf(stc, sizeof stc, "%s/bin/switch-to-configuration", profile_link());
+    if (exists(stc)) { char *boot[] = { stc, "boot", NULL }; run_quiet(boot); }
+    if (have && statvfs("/nix", &after) == 0) {
+        long long freed = ((long long)after.f_bavail - (long long)before.f_bavail) * (long long)after.f_frsize / (1024 * 1024);
+        long long left = (long long)after.f_bavail * (long long)after.f_frsize / (1024 * 1024);
+        fprintf(stderr, "\nsnapos: freed %lld MB; %lld MB free now.%s\n", freed > 0 ? freed : 0, left,
+                all ? " Only the current system is left to go back to." : "");
+    }
+    return 0;
+}
+
+/* install / uninstall: the name is checked, declared, and the system rebuilt */
+static int cmd_add_remove(int add, int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: snapos %s NAME...\n", add ? "add" : "remove"); return 2; }
+    if (add) {
+        for (int i = 2; i < argc; i++) {
+            char ref[PATH_MAX + 160];
+            snprintf(ref, sizeof ref, "path:%s#%s.name", nixdir(), argv[i]);
+            char *flags[] = { NIX_FLAGS };
+            char *ev[] = { "nix", flags[0], flags[1], "eval", "--raw", ref, NULL };
+            if (strchr(argv[i], '#') || run_quiet(ev) != 0) {
+                fprintf(stderr, "snapos: there is no program called '%s'. Look for it with: snapos find %s\n", argv[i], argv[i]);
+                return 1;
+            }
+        }
+    }
+    char **ctl = calloc((size_t)argc + 3, sizeof *ctl);
+    if (!ctl) return 1;
+    int k = 0;
+    ctl[k++] = "snapctl"; ctl[k++] = add ? "add" : "remove";
+    for (int i = 2; i < argc; i++) ctl[k++] = argv[i];
+    ctl[k] = NULL;
+    int rc = run(ctl);
+    free(ctl);
+    if (rc != 0) return rc < 0 ? 1 : rc;
+    char *rb[] = { "snapos", "rebuild", NULL };
+    return cmd_rebuild(2, rb);
 }
 
 static int cmd_doctor(void) {
@@ -1111,14 +1342,29 @@ int main(int argc, char **argv) {
         return argc < 2 ? 2 : 0;
     }
 
-    int is_config  = !strcmp(argv[1], "config");
-    int is_rebuild = !strcmp(argv[1], "rebuild");
-    int is_doctor  = !strcmp(argv[1], "doctor");
-    int is_update  = !strcmp(argv[1], "update");
-    int is_guard   = !strcmp(argv[1], "guard") && argc > 2;
-    if (!strcmp(argv[1], "version")) return cmd_version();
+    const char *c = argv[1];
+    /* these need no root, and a shell must never be root's */
+    if (!strcmp(c, "version")) return cmd_version();
+    if (!strcmp(c, "find")) return cmd_find(argc, argv);
+    if (!strcmp(c, "shell")) return cmd_shell(argc, argv);
+    if (!strcmp(c, "try")) return cmd_try(argc, argv);
+    if (!strcmp(c, "list")) return cmd_list();
+    if (!strcmp(c, "diff")) return cmd_diff();
+    if (!strcmp(c, "generations")) return cmd_generations();
+    if (!strcmp(c, "log")) return cmd_log();
+
+    int is_config  = !strcmp(c, "config");
+    int is_rebuild = !strcmp(c, "rebuild");
+    int is_doctor  = !strcmp(c, "doctor");
+    int is_update  = !strcmp(c, "update");
+    int is_guard   = !strcmp(c, "guard") && argc > 2;
+    int is_add     = !strcmp(c, "add");
+    int is_remove  = !strcmp(c, "remove");
+    int is_gc      = !strcmp(c, "gc");
+    int is_rollback = !strcmp(c, "rollback");
     if (is_update && argc > 2 && !strcmp(argv[2], "check")) return cmd_update_check();
-    if (!is_config && !is_rebuild && !is_doctor && !is_update && !is_guard) {
+    if (!is_config && !is_rebuild && !is_doctor && !is_update && !is_guard &&
+        !is_add && !is_remove && !is_gc && !is_rollback) {
         fprintf(stderr, "snapos: unknown command '%s'\n\n", argv[1]);
         usage(stderr);
         return 2;
@@ -1129,6 +1375,9 @@ int main(int argc, char **argv) {
         reexec_with_sudo(argc, argv);
         return 1;
     }
+    if (is_add || is_remove) return cmd_add_remove(is_add, argc, argv);
+    if (is_gc) return cmd_gc(argc > 2 && !strcmp(argv[2], "--all"));
+    if (is_rollback) return cmd_rollback();
     if (is_doctor) return cmd_doctor();
     if (is_guard) {
         if (!strcmp(argv[2], "boot")) return cmd_guard_boot();

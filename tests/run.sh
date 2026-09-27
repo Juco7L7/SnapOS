@@ -376,7 +376,7 @@ printf '#!/bin/sh\ncat "%s/users" 2>/dev/null\n' "$U" > "$U/bin/loginctl"
 printf '#!/bin/sh\nprintf "2222222222222222222222222222222222222222\\trefs/heads/nixos-26.05\\n"\n' > "$U/bin/git"
 chmod +x "$U/bin"/*
 printf 'VERSION_ID="2.0"\n' > "$U/os-release"
-up() { env PATH="$U/bin:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
+up() { env PATH="$U/bin:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_REBUILD_LOG="$U/rebuild.log" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="${SNAPOS_UPDATE_API:-file://$U/api}" SNAPOS_UPDATE_WEB="${SNAPOS_UPDATE_WEB:-file://$U/noweb}" SNAPOS_OS_RELEASE="${SNAPOS_OS_RELEASE:-$U/os-release}" SNAPOS_STATE_DIR="${SNAPOS_STATE_DIR:-$U/state}" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 SNAPOS_GUARD_NO_REBOOT=1 "$BIN/snapos" "$@"; }
 out="$(up update check 2>&1)"; rc=$?
 check_eq "check reports a newer release with exit 10" "10" "$rc"
 check "check prints the tag, the commit and the notes" bash -c "printf '%s' \"\$1\" | grep -q '^tag V2.1' && printf '%s' \"\$1\" | grep -q '^latest 0123456' && printf '%s' \"\$1\" | grep -q 'Faster boot'" _ "$out"
@@ -490,6 +490,80 @@ section "/etc/snapos"
 INSTALLER="$ROOT/nix/installer/snap-install-nixos.sh"
 check "the tools look in /etc/snapos first" bash -c "for f in snapos snapctl snap-deb snapconfig; do grep -q '\"/etc/snapos' '$ROOT/src/'\$f.c || exit 1; done"
 check "the installer writes the system to /etc/snapos" bash -c "grep -q 'path:/mnt/etc/snapos#\$FLAKE_ATTR' '$INSTALLER' && ! grep -q 'cp -a /etc/snapos-src/. /mnt/etc/nixos' '$INSTALLER'"
+section "snapos: everyday commands"
+C="$TMP/cmd"
+mkdir -p "$C/sys" "$C/bin" "$C/state" "$C/profile"
+cp "$ROOT/configuration.nix" "$C/sys/"
+printf '#!/bin/sh\necho "REBUILD $*" >> "%s/calls"\necho "building the system"\nexit ${FAKE_REBUILD_RC:-0}\n' "$C" > "$C/bin/nixos-rebuild"
+cat > "$C/bin/nix" <<NIX
+#!/bin/sh
+echo "NIX \$*" >> "$C/calls"
+case "\$*" in
+  *"eval"*"#nope.name"*) exit 1 ;;
+  *"search"*) echo "* legacyPackages.x86_64-linux.htop (3.4.1)"; echo "  An interactive process viewer" ;;
+esac
+exit 0
+NIX
+printf '#!/bin/sh\necho "GC $*" >> "%s/calls"\nexit 0\n' "$C" > "$C/bin/nix-collect-garbage"
+printf '#!/bin/sh\necho "SNAPDEB $*" >> "%s/calls"\nexit 0\n' "$C" > "$C/bin/snap-deb"
+chmod +x "$C/bin"/*
+sc() { env PATH="$C/bin:$BIN:$PATH" SNAPOS_FLAKE_ATTR=snapos SNAPOS_NIX_DIR="$C/sys" SNAPOS_STATE_DIR="$C/state" SNAPOS_PROFILE="$C/profile/system" SNAPOS_REBUILD_LOG="$C/rebuild.log" SNAPOS_CURRENT_SYSTEM="$C/current" XDG_RUNTIME_DIR="$C" "$BIN/snapos" "$@"; }
+out="$(sc find htop 2>&1)"
+check "find searches the system's own package set" grep -q "search path:$C/sys htop" "$C/calls"
+check "find shows plain names" bash -c "printf '%s' \"\$1\" | grep -q '^\* htop (3.4.1)' && ! printf '%s' \"\$1\" | grep -q legacyPackages" _ "$out"
+sc shell htop btop >/dev/null 2>&1
+check "shell brings programs without installing them" grep -q "shell path:$C/sys#htop path:$C/sys#btop" "$C/calls"
+sc try cowsay hello >/dev/null 2>&1
+check "try runs a program once" grep -q "run path:$C/sys#cowsay -- hello" "$C/calls"
+sc add htop >/dev/null 2>&1
+check_eq "add succeeds" "0" "$?"
+check "add declares the program between the markers" bash -c "sed -n '/snapos:packages:begin/,/snapos:packages:end/p' '$C/sys/configuration.nix' | grep -q '^    htop$'"
+check "add rebuilds the system" grep -q "REBUILD switch --flake path:$C/sys#snapos" "$C/calls"
+out="$(sc add nope 2>&1)"; rc=$?
+check_eq "add refuses a name that does not exist" "1" "$rc"
+check "and points to find" bash -c "printf '%s' \"\$1\" | grep -q 'snapos find nope' && ! grep -q '^    nope$' '$C/sys/configuration.nix'" _ "$out"
+: > "$C/calls"
+sc remove htop >/dev/null 2>&1
+check "remove takes the program out and rebuilds" bash -c "! grep -q '^    htop$' '$C/sys/configuration.nix' && grep -q 'REBUILD switch' '$C/calls'"
+sc remove snapos-tools >/dev/null 2>&1
+check "SnapOS itself cannot be removed" grep -q '^    snapos-tools$' "$C/sys/configuration.nix"
+out="$(sc list 2>&1)"
+check "list shows the declared programs" bash -c "printf '%s' \"\$1\" | grep -q 'snapweb'" _ "$out"
+: > "$C/calls"
+out="$(sc rebuild --next-boot 2>&1)"
+check "rebuild --next-boot only prepares the next start" bash -c "grep -q 'REBUILD boot --flake' '$C/calls' && printf '%s' \"\$1\" | grep -q 'next boot'" _ "$out"
+sc rebuild --trace >/dev/null 2>&1
+check "rebuild --trace asks Nix for the full error" grep -q 'REBUILD switch --flake .* --show-trace' "$C/calls"
+out="$(FAKE_REBUILD_RC=1 sc rebuild 2>&1)"; rc=$?
+check "a failed rebuild says how to see more" bash -c "[ $rc -ne 0 ] && printf '%s' \"\$1\" | grep -q 'snapos rebuild --trace' && printf '%s' \"\$1\" | grep -q 'not changed'" _ "$out"
+out="$(sc log 2>&1)"
+check "log shows the last rebuild again" bash -c "printf '%s' \"\$1\" | grep -q 'building the system'" _ "$out"
+sc rollback >/dev/null 2>&1
+check "rollback goes to the previous system" grep -q 'REBUILD switch --rollback' "$C/calls"
+sc generations >/dev/null 2>&1
+check "generations lists the systems" grep -q 'REBUILD list-generations' "$C/calls"
+sc diff >/dev/null 2>&1
+check "diff builds without applying and compares" bash -c "grep -q 'REBUILD build --flake' '$C/calls' && grep -q 'store diff-closures $C/current ./result' '$C/calls'"
+sc gc >/dev/null 2>&1
+check "gc keeps two weeks of systems" grep -q 'GC --delete-older-than 14d' "$C/calls"
+printf 'previous=1\nattempts=0\nname=SnapOS installer V9\n' > "$C/state/update-pending"
+out="$(sc gc --all 2>&1)"; rc=$?
+check "gc --all waits while an update has not started yet" bash -c "[ $rc -ne 0 ] && ! grep -q 'GC -d' '$C/calls'"
+rm -f "$C/state/update-pending"
+sc gc --all >/dev/null 2>&1
+check "gc --all keeps only the current system" grep -q 'GC -d' "$C/calls"
+out="$("$BIN/snapos" help 2>&1)"
+check "help maps the apt habits" bash -c "printf '%s' \"\$1\" | grep -q 'apt install X *-> *snapos add X' && printf '%s' \"\$1\" | grep -q 'apt autoremove *-> *snapos gc'" _ "$out"
+check "nix-env installs are caught with an explanation" bash -c "grep -q 'nix-env()' '$ROOT/nix/modules/snapos.nix' && grep -q 'snapos add' '$ROOT/nix/modules/snapos.nix'"
+check "the flake offers its package set to find, shell and try" grep -q 'legacyPackages = forAll mkPkgs' "$ROOT/flake.nix"
+check "old systems are cleaned every week" grep -q 'delete-older-than 14d' "$ROOT/nix/modules/snapos.nix"
+
+section "README"
+check "every picture the README shows exists" bash -c "for f in \$(grep -o 'src=\"[^\"]*\"' '$ROOT/README.md' | cut -d'\"' -f2); do [ -f '$ROOT/'\$f ] || { echo missing \$f; exit 1; }; done"
+check "each main section opens with its animation" bash -c "for g in snappy-declares snappy-commands snappy-programs snappy-undo snappy-updates snappy-deb snappy-defends snappy-install snappy-appearance; do grep -q \"branding/\$g.gif\" '$ROOT/README.md' || exit 1; done"
+check "the README documents every snapos command" bash -c "for c in find add remove list shell try config diff rebuild rollback generations gc log update version doctor; do grep -q \"snapos \$c\" '$ROOT/README.md' || { echo \$c; exit 1; }; done"
+check "the README shows the Nix command behind each snapos command" bash -c "grep -q 'nix-collect-garbage' '$ROOT/README.md' && grep -q 'nixos-rebuild switch --rollback' '$ROOT/README.md' && grep -q 'nix shell' '$ROOT/README.md'"
+
 section "snapos update: packages"
 P="$TMP/pkg"
 mkdir -p "$P/sys" "$P/bin" "$P/state" "$P/profile/system-7-link/bin" "$P/api/releases" "$P/api/git/ref/tags" "$P/web"

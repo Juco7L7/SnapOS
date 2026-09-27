@@ -78,6 +78,11 @@
           default = p.snapos-tools;
         });
 
+      # The package set the system is built from (nixpkgs plus the SnapOS
+      # programs): `snapos find`, `snapos shell` and `snapos try` use it, so a
+      # program tried today is the same version a later `snapos add` installs.
+      legacyPackages = forAll mkPkgs;
+
       checks.${system} = import ./nix/tests/desktop.nix { inherit pkgs; };
 
       devShells = forAll (sys: { default = (mkPkgs sys).mkShell { packages = with (mkPkgs sys); [ gcc gnumake ]; }; });

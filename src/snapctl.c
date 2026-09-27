@@ -240,15 +240,61 @@ static void cmd_diff(void) {
     for (size_t i = 0; i < pend.n; i++) printf("%s  + %s%s\n", cGRN, pend.v[i], cR);
 }
 
+/* A program name as nixpkgs writes them: letters, digits, . _ + - */
+static int valid_name(const char *s) {
+    if (!s || !*s || *s == '-' || strlen(s) > 100) return 0;
+    for (const char *c = s; *c; c++)
+        if (!isalnum((unsigned char)*c) && !strchr("._+-", *c)) return 0;
+    return 1;
+}
+
+static int cmd_add(int argc, char **argv) {
+    if (argc < 1) { fprintf(stderr, "usage: snapctl add <program>...\n"); return 2; }
+    List decl; l_init(&decl); char *cfg = read_file(joinp(nixdir(), "configuration.nix"));
+    parse_declared(cfg, &decl); free(cfg);
+    int added = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!valid_name(argv[i])) { fprintf(stderr, "snapctl: '%s' is not a program name\n", argv[i]); return 2; }
+        if (l_has(&decl, argv[i])) { printf("%s  = %s is already declared%s\n", cDIM, argv[i], cR); continue; }
+        l_add(&decl, argv[i]); added++;
+        printf("%s  + %s%s\n", cGRN, argv[i], cR);
+    }
+    if (!added) return 0;
+    return write_declared(&decl) != 0;
+}
+
+static int cmd_remove(int argc, char **argv) {
+    if (argc < 1) { fprintf(stderr, "usage: snapctl remove <program>...\n"); return 2; }
+    List decl; l_init(&decl); char *cfg = read_file(joinp(nixdir(), "configuration.nix"));
+    parse_declared(cfg, &decl); free(cfg);
+    List keep; l_init(&keep);
+    int removed = 0;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "snapos-tools")) { fprintf(stderr, "snapctl: snapos-tools is SnapOS itself and stays\n"); return 2; }
+        if (!l_has(&decl, argv[i])) printf("%s  = %s is not declared%s\n", cDIM, argv[i], cR);
+    }
+    for (size_t i = 0; i < decl.n; i++) {
+        int drop = 0;
+        for (int j = 0; j < argc; j++) if (!strcmp(decl.v[i], argv[j])) drop = 1;
+        if (drop) { removed++; printf("%s  - %s%s\n", cRED, decl.v[i], cR); }
+        else l_add(&keep, decl.v[i]);
+    }
+    if (!removed) return 0;
+    return write_declared(&keep) != 0;
+}
+
 int main(int argc, char **argv) {
     colors_init();
     if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
         printf("snapctl — SnapOS declarative controller\n"
-               "  status | run <prog> [args] | save | discard [name|--all] | list | diff\n");
+               "  status | add <prog>... | remove <prog>... | run <prog> [args] | save |\n"
+               "  discard [name|--all] | list | diff\n");
         return 0;
     }
     const char *cmd = argv[1];
     if (!strcmp(cmd, "status"))  { cmd_status(); return 0; }
+    if (!strcmp(cmd, "add"))     return cmd_add(argc - 2, argv + 2);
+    if (!strcmp(cmd, "remove"))  return cmd_remove(argc - 2, argv + 2);
     if (!strcmp(cmd, "run"))     return cmd_run(argc - 2, argv + 2);
     if (!strcmp(cmd, "save"))    return cmd_save();
     if (!strcmp(cmd, "discard")) return cmd_discard(argc - 2, argv + 2);
