@@ -7,6 +7,11 @@ on:
         description: "Release tag (default: iso-arm-<run number>)"
         required: false
         default: ""
+      build_only:
+        description: "Only build and attach the ISO (for a release of code that was already tested)"
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [ main ]
     paths: [ "VERSION", "flake.nix", "flake.lock", "configuration.nix", "nix/**", "src/**", "Makefile", "branding/**", "tests/**", ".github/workflows/build-nixos-iso-arm.yml" ]
@@ -49,6 +54,7 @@ jobs:
       # The image is booted by UEFI in QEMU on the runner itself, until the
       # installer prints its first screen on the serial console.
       - name: Boot the image in QEMU (UEFI)
+        if: github.event.inputs.build_only != 'true'
         run: |
           fwdir=$(nix --extra-experimental-features 'nix-command flakes' build --inputs-from . nixpkgs#OVMF.fd --no-link --print-out-paths | head -1)
           fw="$fwdir/FV/QEMU_EFI.fd"
@@ -75,6 +81,7 @@ jobs:
       # The whole installation, unattended, on a virtual disk; then the
       # installed system is booted and its screen photographed.
       - name: Install SnapOS in QEMU and boot the installed system
+        if: github.event.inputs.build_only != 'true'
         timeout-minutes: 300
         run: |
           fwdir=$(nix --extra-experimental-features 'nix-command flakes' build --inputs-from . nixpkgs#OVMF.fd --no-link --print-out-paths | head -1)

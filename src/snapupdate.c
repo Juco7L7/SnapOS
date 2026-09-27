@@ -135,22 +135,41 @@ static void on_restart(GtkButton *b, gpointer d) {
     gtk_widget_destroy(app.win);
 }
 
+/* Every desktop brings its own terminal; the first one found is used. */
+static int open_terminal(const char *script) {
+    const char *custom = g_getenv("SNAPUPDATE_TERMINAL");
+    if (custom && *custom) return g_spawn_command_line_async(custom, NULL);
+    static const char *terms[][4] = {
+        { "gnome-terminal", "--title=SnapOS", "--", NULL },
+        { "konsole", "-e", NULL, NULL },
+        { "xfce4-terminal", "--title=SnapOS", "-x", NULL },
+        { "kitty", "--title=SnapOS", NULL, NULL },
+        { "xterm", "-e", NULL, NULL },
+    };
+    for (gsize i = 0; i < G_N_ELEMENTS(terms); i++) {
+        char *path = g_find_program_in_path(terms[i][0]);
+        if (!path) continue;
+        g_free(path);
+        const char *argv[8];
+        int k = 0;
+        for (int j = 0; j < 4 && terms[i][j]; j++) argv[k++] = terms[i][j];
+        argv[k++] = "bash"; argv[k++] = "-c"; argv[k++] = script; argv[k] = NULL;
+        if (g_spawn_async(NULL, (char **)argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL)) return 1;
+    }
+    return 0;
+}
+
 static void on_install(GtkButton *b, gpointer d) {
     (void)b; (void)d;
     /* The terminal stays open until Enter, so an error can be read, and
      * everything the updater prints is kept in the user's update.log. */
-    const char *term = g_getenv("SNAPUPDATE_TERMINAL");
-    if (!term || !*term) term = "gnome-terminal --title=SnapOS -- bash -c '"
-        "mkdir -p \"$HOME/.local/share/snapos\"; "
-        "snapos update 2>&1 | tee -a \"$HOME/.local/share/snapos/update.log\"; "
-        "echo; read -r -p \"Press Enter to close.\"'";
-    GError *err = NULL;
-    if (!g_spawn_command_line_async(term, &err)) {
+    if (!open_terminal("mkdir -p \"$HOME/.local/share/snapos\"; "
+                       "snapos update 2>&1 | tee -a \"$HOME/.local/share/snapos/update.log\"; "
+                       "echo; read -r -p \"Press Enter to close.\"")) {
         GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(app.win), GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR,
             GTK_BUTTONS_CLOSE, "Could not open a terminal. Run this in one:\n\n  snapos update");
         gtk_dialog_run(GTK_DIALOG(dlg));
         gtk_widget_destroy(dlg);
-        if (err) g_error_free(err);
         return;
     }
     gtk_widget_destroy(app.win);
@@ -199,7 +218,7 @@ static void build_window(int available) {
         : available
         ? "A new SnapOS release is available. Installing keeps your files, your programs and your settings, and the new system is used from the next restart. If it does not come up, SnapOS goes back to this one by itself."
         : app.unknown
-        ? "GitHub did not answer. Check the network and try again in a moment; in a terminal, `snapos update` says more."
+        ? "The check did not get an answer from GitHub. If the network is up, try again in a moment; in a terminal, `snapos update check` says what went wrong."
         : "This system runs the latest release.");
     gtk_label_set_line_wrap(GTK_LABEL(sub), TRUE);
     gtk_label_set_xalign(GTK_LABEL(sub), 0);
@@ -238,8 +257,19 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--autostart")) app.autostart = 1;
     int undone = rollback_notice(app.undone, sizeof app.undone);
     int available = undone ? 0 : check();
-    /* at login only news is worth a window; from the menu the answer always is */
-    if (app.autostart && !available && !undone) return 0;
+    /* At login only news is worth a window; from the menu the answer always
+     * is. With no news the check stays in the background and asks again every
+     * few hours, so a release published during the day is offered too. */
+    if (app.autostart && !available && !undone) {
+        const char *e = g_getenv("SNAPUPDATE_EVERY");
+        long every = e && atol(e) > 0 ? atol(e) : 4 * 3600;
+        if (g_getenv("SNAPUPDATE_ONCE")) return 0;
+        while (!available) {
+            g_usleep((gulong)every * G_USEC_PER_SEC);
+            app.unknown = 0;
+            available = check();
+        }
+    }
     gtk_init(&argc, &argv);
     build_window(available);
     gtk_main();

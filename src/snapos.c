@@ -547,14 +547,35 @@ static const char *state_dir(void) { return env_or("SNAPOS_STATE_DIR", "/var/lib
 static const char *profile_link(void) { return env_or("SNAPOS_PROFILE", "/nix/var/nix/profiles/system"); }
 
 /* Downloads land in a folder only root can enter: a shared /tmp would let
- * another user plant a link and have root overwrite a file of their choice. */
+ * another user plant a link and have root overwrite a file of their choice.
+ * The login check runs as the user, who cannot enter that folder: it gets a
+ * private folder of its own, removed when the program ends. */
+static char own_dir[PATH_MAX];
+
+static void drop_own_dir(void) {
+    if (!own_dir[0]) return;
+    static const char *left[] = { "release.txt", "release.json", NULL };
+    char p[PATH_MAX + 32];
+    for (int i = 0; left[i]; i++) {
+        snprintf(p, sizeof p, "%s/%s", own_dir, left[i]);
+        unlink(p);
+    }
+    rmdir(own_dir);
+}
+
 static const char *work_dir(void) {
     static char dir[PATH_MAX];
+    if (own_dir[0]) return own_dir;
     snprintf(dir, sizeof dir, "%s/work", state_dir());
     char *mk[] = { "mkdir", "-p", dir, NULL };
     run_quiet(mk);
-    chmod(dir, 0700);
-    return dir;
+    if (chmod(dir, 0700) == 0 && access(dir, W_OK | X_OK) == 0) return dir;
+    const char *base = getenv("XDG_RUNTIME_DIR");
+    if (!base || !is_dir(base) || access(base, W_OK) != 0) base = "/tmp";
+    snprintf(own_dir, sizeof own_dir, "%s/snapos-check-XXXXXX", base);
+    if (!mkdtemp(own_dir)) { own_dir[0] = 0; return dir; }
+    atexit(drop_own_dir);
+    return own_dir;
 }
 
 /* Right after login the Wi-Fi may still be connecting. */

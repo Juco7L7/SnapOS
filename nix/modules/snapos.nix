@@ -215,7 +215,11 @@ in {
     environment.etc."snapos/debian-archive-keyring.gpg".source = ../../security/debian-archive-keyring.gpg;
     systemd.tmpfiles.rules = [
       "f /etc/snapos/allow.txt 0644 root root -"
-      "d /var/lib/snapos 0750 root root -"
+      # Readable: the login check and `snapos log` run as the user. What is
+      # private in it keeps its own mode.
+      "d /var/lib/snapos 0755 root root -"
+      "d /var/lib/snapos/quarantine 0700 root root -"
+      "d /var/lib/snapos/update/work 0700 root root -"
       "d ${debLayer} 0755 root root -"
       "d /var/lib/snapos/update 0755 root root -"
       # The system lives in /etc/snapos; the NixOS path keeps working through a link.

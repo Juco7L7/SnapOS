@@ -74,6 +74,15 @@ let
             print(out)
             assert "snapos add" in out, out
             machine.succeed("snapguard status")
+            # the login check runs as the user: it must see a release that is there
+            machine.succeed("mkdir -p /tmp/web/releases/latest/download && printf 'commit=0123456789abcdef0123456789abcdef01234567\\nversion=99.0\\nname=SnapOS installer V99.0\\ndate=2030-01-01T00:00:00Z\\n' > /tmp/web/releases/latest/download/snapos-release.txt && chmod -R a+rX /tmp/web")
+            status, out = machine.execute("su tester -c 'SNAPOS_UPDATE_WEB=file:///tmp/web SNAPOS_UPDATE_API=file:///tmp/noapi snapos update check' 2>&1")
+            print(out)
+            assert status == 10, (status, out)
+            assert "state available" in out, out
+            machine.succeed("su tester -c 'test -r /var/lib/snapos/update && test -x /var/lib/snapos/update'")
+            machine.fail("su tester -c 'ls /var/lib/snapos/update/work'")
+            ${if name == "desktop" || name == "xfce" then "machine.execute(\"su tester -c 'DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority SNAPUPDATE_ONCE=1 SNAPOS_UPDATE_WEB=file:///tmp/web SNAPOS_UPDATE_API=file:///tmp/noapi setsid snapupdate --autostart >/tmp/snapupdate.log 2>&1 &'\"); machine.sleep(20); machine.succeed(\"pgrep -u tester -f [s]napupdate.--autostart\"); machine.screenshot(\"03-update\"); machine.execute(\"pkill -u tester -f [s]napupdate.--autostart\")" else ""}
             machine.succeed("grep -q 'PRETTY_NAME=\"SnapOS ' /etc/os-release")
             ${let ls = pkgs.lib.splitString "\n" extra; in pkgs.lib.concatStringsSep "\n" ([ (builtins.head ls) ] ++ map (l: "    " + l) (builtins.tail ls))}
             machine.screenshot("09-final")

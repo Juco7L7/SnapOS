@@ -561,6 +561,45 @@ static int in_layer_root(char *const cmd[]) {
     return run(argv);
 }
 
+/* A PC runs 32-bit programs too (Steam and most games need their libraries),
+ * so the layer of an amd64 computer also takes i386 packages. 1 = it was
+ * turned on now, and the package lists must be read again. */
+static int ensure_multiarch(void) {
+    if (strcmp(host_arch(), "amd64") != 0) return 0;
+    char p[PATH_MAX + 64], line[64];
+    pathf(p, sizeof p, "%s/rootfs/var/lib/dpkg/arch", layer());
+    FILE *f = fopen(p, "r");
+    if (f) {
+        int have = 0;
+        while (fgets(line, sizeof line, f)) if (!strncmp(line, "i386", 4)) have = 1;
+        fclose(f);
+        if (have) return 0;
+    }
+    return write_file(p, "amd64\ni386\n", 0644);
+}
+
+/* Steam's launcher asks for its libraries in a terminal, as root, the first
+ * time it starts. Here they are installed together with it. */
+static void steam_libraries(void) {
+    char p[PATH_MAX + 64], marker[PATH_MAX + 64];
+    pathf(p, sizeof p, "%s/rootfs/usr/bin/steamdeps", layer());
+    pathf(marker, sizeof marker, "%s/steam-libs-ok", layer());
+    if (!exists(p)) { unlink(marker); return; }
+    if (exists(marker)) return;
+    printf("\n  %sInstalling the libraries Steam needs (64 and 32 bit)...%s\n", DIM, RST);
+    char *upd[] = { "apt-get", "-q", "update", NULL };
+    in_layer_root(upd);
+    char *own[] = { "apt-get", "-q", "install", "-y", "steam-libs-amd64", "steam-libs-i386:i386", NULL };
+    if (in_layer_root(own) == 0) { write_file(marker, "", 0644); return; }
+    char *plain[] = { "apt-get", "-q", "install", "-y",
+        "libc6:i386", "libgl1:i386", "libgl1-mesa-dri:i386", "libegl1:i386", "libgbm1:i386",
+        "libgl1", "libegl1", "libgbm1", "libvulkan1", "libvulkan1:i386",
+        "mesa-vulkan-drivers", "mesa-vulkan-drivers:i386", "libnss3", "libnm0", "xdg-user-dirs",
+        "xterm", "zenity", "curl", "file", "xz-utils", "pciutils", NULL };
+    if (in_layer_root(plain) == 0) write_file(marker, "", 0644);
+    else fprintf(stderr, "  %s! Steam's libraries could not all be installed; Steam may ask for them.%s\n", RED, RST);
+}
+
 /* The base set is installed once; the marker says it is there. */
 static int ensure_base(void) {
     char marker[PATH_MAX];
@@ -774,8 +813,9 @@ static int cmd_sync(void) {
     }
 
     int rc = rc_skip;
+    int widened = ensure_multiarch();
     if (ni > 0) {
-        if (!lists_fresh()) {
+        if (widened || !lists_fresh()) {
             printf("  %sUpdating the Debian package lists...%s\n", DIM, RST);
             char *upd[] = { "apt-get", "-q", "update", NULL };
             if (in_layer_root(upd) != 0) { fprintf(stderr, "snap-deb: apt-get update failed; is the network up?\n"); return 1; }
@@ -799,6 +839,7 @@ static int cmd_sync(void) {
         argv[k] = NULL;
         if (in_layer_root(argv) != 0) rc = 1;
     }
+    steam_libraries();
     if (ni > 0 || np > 0) {
         char *auto_rm[] = { "apt-get", "-q", "autoremove", "--purge", "-y", NULL };
         in_layer_root(auto_rm);
@@ -865,6 +906,7 @@ static int cmd_run(int argc, char **argv) {
     a[k++] = "--perms"; a[k++] = "1777"; a[k++] = "--tmpfs"; a[k++] = "/tmp";
     a[k++] = "--ro-bind-try"; a[k++] = "/tmp/.X11-unix"; a[k++] = "/tmp/.X11-unix";
     a[k++] = "--tmpfs"; a[k++] = "/run";
+    a[k++] = "--ro-bind-try"; a[k++] = "/run/udev"; a[k++] = "/run/udev";
     a[k++] = "--tmpfs"; a[k++] = "/var/tmp";
     if (runtime[0]) { a[k++] = "--bind"; a[k++] = runtime; a[k++] = runtime; }
     a[k++] = "--ro-bind-try"; a[k++] = "/run/dbus/system_bus_socket"; a[k++] = "/run/dbus/system_bus_socket";

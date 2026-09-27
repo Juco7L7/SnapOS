@@ -436,6 +436,8 @@ If there is something new, a window offers **Install now**. You can also run
   offers **Restart now**.
 - **No network?** The window says it could not check, instead of claiming the
   system is up to date.
+- **Nothing new at login?** The check asks again every few hours while you
+  are logged in.
 - `snapos update check` only asks; `snapos version` shows what is running.
 
 </details>
@@ -489,7 +491,9 @@ snap-deb status                 # the layer: Debian version, packages, tools
   install but never work. Look for that software with `snapos find` instead.
 - **It is not a sandbox.** A program in it reads and writes your files like a
   native one, which is why SnapGuard scans every `.deb` first.
-- On an ARM64 computer the layer takes `arm64` packages.
+- On an ARM64 computer the layer takes `arm64` packages. On a PC it takes
+  64-bit and 32-bit packages, so programs like **Steam** work: its libraries
+  are installed together with it.
 
 </details>
 

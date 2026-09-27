@@ -46,7 +46,7 @@ jobs:
       - name: Build the SnapOS tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential xvfb xdotool
+          sudo apt-get install -y build-essential xvfb xdotool imagemagick
           make all
 
       - name: Let bubblewrap use user namespaces (Ubuntu blocks them by default)
@@ -118,3 +118,52 @@ jobs:
           test ! -e "$SNAPDEB_DIR/rootfs/usr/bin/mousepad"
           test ! -e "$SNAPDEB_DIR/exports/share/applications/org.xfce.mousepad.desktop"
           test -x "$SNAPDEB_DIR/exports/bin/hello-snap"
+
+      - name: Steam installs with its 32-bit libraries
+        run: |
+          export PATH="$TOOLS:$PATH"
+          cd "$RUNNER_TEMP"
+          bin_dir="$GITHUB_WORKSPACE/bin"
+          curl -fsSL --retry 3 -o steam_latest.deb https://cdn.akamai.steamstatic.com/client/installer/steam.deb
+          "$(head -3 "$GITHUB_WORKSPACE/tools.txt" | tail -1)/bin/dpkg-deb" -I steam_latest.deb | sed -n '1,40p'
+          "$bin_dir/snap-deb" add ./steam_latest.deb --force
+          sudo env PATH="$TOOLS:$PATH" SNAPDEB_DIR="$SNAPDEB_DIR" SNAPOS_NIX_DIR="$SNAPOS_NIX_DIR" SNAPDEB_KEYRING="$SNAPDEB_KEYRING" "$bin_dir/snap-deb" sync
+          "$bin_dir/snap-deb" list
+          "$bin_dir/snap-deb" list | grep -q 'steam.*installed'
+          grep -q i386 "$SNAPDEB_DIR/rootfs/var/lib/dpkg/arch"
+          test -e "$SNAPDEB_DIR/rootfs/lib/i386-linux-gnu/libc.so.6" || test -e "$SNAPDEB_DIR/rootfs/usr/lib/i386-linux-gnu/libc.so.6"
+          ls "$SNAPDEB_DIR/rootfs/usr/lib/i386-linux-gnu" | grep -E 'libGL|libEGL|libgbm' | head
+          test -f "$SNAPDEB_DIR/steam-libs-ok"
+          grep -q '^Exec=snap-deb run' "$SNAPDEB_DIR/exports/share/applications/steam.desktop"
+
+      - name: Steam starts and downloads itself
+        run: |
+          export PATH="$SNAPDEB_DIR/exports/bin:$GITHUB_WORKSPACE/bin:$TOOLS:$PATH"
+          mkdir -p "$RUNNER_TEMP/steam-shots"
+          timeout 600 xvfb-run -a -s "-screen 0 1280x800x24" bash -c '
+            steam > "$RUNNER_TEMP/steam.log" 2>&1 &
+            ok=""
+            for i in $(seq 1 110); do
+              sleep 5
+              # Steam has downloaded itself and its own window (the sign-in screen) is up
+              if [ -d "$HOME/.local/share/Steam/ubuntu12_32" ] && xdotool search --name "steamwebhelper" >/dev/null 2>&1; then ok=1; fi
+              [ -n "$ok" ] && sleep 20 && break
+            done
+            import -window root "$RUNNER_TEMP/steam-shots/steam.png" 2>/dev/null || true
+            xdotool search --name "." getwindowname %@ 2>/dev/null | sort -u | head -20
+            echo "$ok" > "$RUNNER_TEMP/steam-ok"
+            pkill -x steam || true
+            pkill -x steamwebhelper || true
+          ' || true
+          echo "--- steam.log"; tail -40 "$RUNNER_TEMP/steam.log"
+          test "$(cat "$RUNNER_TEMP/steam-ok")" = 1
+
+      - name: Keep Steam's log and screen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam
+          path: |
+            ${{ runner.temp }}/steam.log
+            ${{ runner.temp }}/steam-shots
+          if-no-files-found: ignore

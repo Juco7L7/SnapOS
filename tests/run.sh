@@ -317,6 +317,8 @@ check "the module ships bubblewrap and debootstrap" bash -c "grep -q 'pkgs.bubbl
 check "the Debian archive keyring is shipped" bash -c "[ -s '$ROOT/security/debian-archive-keyring.gpg' ] && grep -q 'debian-archive-keyring.gpg' '$ROOT/nix/modules/snapos.nix'"
 check "the layer is created only from a verified archive" grep -q -- '--keyring=' "$ROOT/src/snap-deb.c"
 check "apt in the layer runs without SYS_ADMIN or MKNOD and in its own pid namespace" bash -c "! grep -q '\"ALL\"' '$ROOT/src/snap-deb.c' && grep -q 'CAP_SYS_CHROOT' '$ROOT/src/snap-deb.c' && ! grep -q 'CAP_SYS_ADMIN' '$ROOT/src/snap-deb.c' && grep -q -- '--unshare-pid' '$ROOT/src/snap-deb.c'"
+check "the layer of a PC takes 32-bit packages too" bash -c "grep -q 'amd64.ni386' '$ROOT/src/snap-deb.c'"
+check "Steam gets its libraries when it is installed" bash -c "grep -q 'steam-libs-i386:i386' '$ROOT/src/snap-deb.c' && grep -q 'libgl1-mesa-dri:i386' '$ROOT/src/snap-deb.c'"
 check "install scripts that call systemctl do not fail" bash -c "grep -q '\"systemctl\", \"service\"' '$ROOT/src/snap-deb.c' && grep -q 'policy-rc.d' '$ROOT/src/snap-deb.c'"
 check "debootstrap gets mount on its PATH" grep -q 'util-linux}/bin' "$ROOT/flake.nix"
 mkdir -p "$TMP/nolayer2" "$TMP/nixkey/debs"
@@ -392,6 +394,18 @@ check "with the API answering too, the notes come along" bash -c "printf '%s' \"
 out="$(SNAPOS_UPDATE_API="file://$U/noapi" up update check 2>&1)"; rc=$?
 check_eq "without the file and without the API the check fails honestly" "1" "$rc"
 check "and says why" bash -c "printf '%s' \"\$1\" | grep -q 'could not read the latest release'" _ "$out"
+# the login check runs as the user, who cannot write where root keeps the downloads
+if [ "$(id -u)" -ne 0 ]; then
+    mkdir -p "$U/locked/work" "$U/run"
+    chmod 555 "$U/locked" "$U/locked/work"
+    out="$(XDG_RUNTIME_DIR="$U/run" SNAPOS_STATE_DIR="$U/locked" SNAPOS_UPDATE_WEB="file://$U/web" SNAPOS_UPDATE_API="file://$U/noapi" up update check 2>&1)"; rc=$?
+    check_eq "the check works where the user cannot write the state folder" "10" "$rc"
+    check "and leaves nothing behind" bash -c "[ -z \"\$(ls -A '$U/run')\" ]"
+    chmod 755 "$U/locked" "$U/locked/work"
+fi
+check "the state folder can be read by the login check" bash -c "grep -q 'd /var/lib/snapos 0755' '$ROOT/nix/modules/snapos.nix' && grep -q 'd /var/lib/snapos/quarantine 0700' '$ROOT/nix/modules/snapos.nix'"
+check "snapupdate opens the terminal the desktop has" bash -c "for t in gnome-terminal konsole xfce4-terminal kitty; do grep -q \"\\\"\$t\\\"\" '$ROOT/src/snapupdate.c' || exit 1; done"
+check "snapupdate keeps asking during the day" grep -q 'SNAPUPDATE_EVERY' "$ROOT/src/snapupdate.c"
 out="$(up version 2>&1)"
 check "version shows the SnapOS version, build and date" bash -c "printf '%s' \"\$1\" | grep -qE 'SnapOS V2.0( ARM)? \(build abc1234, released 2026-09-01\)'" _ "$out"
 printf '1.9\n' > "$U/src/snapos/VERSION"
