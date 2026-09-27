@@ -549,7 +549,7 @@ check "the tools are built for both architectures" bash -c "grep -q 'aarch64-lin
 check "CI builds the ARM64 image" grep -q 'ubuntu-24.04-arm' "$ROOT/.github/workflows/build-nixos-iso-arm.yml"
 check "CI installs SnapOS in a VM on ARM64 and boots it" bash -c "grep -q 'SNAPOS-INSTALL-OK' '$ROOT/.github/workflows/build-nixos-iso-arm.yml' && grep -q 'snapos login:' '$ROOT/.github/workflows/build-nixos-iso-arm.yml'"
 check "the installer writes the partition table in one go" bash -c "grep -q 'sfdisk --quiet --wipe always' '$INSTALLER' && grep -q 'type=uefi, name=ESP' '$INSTALLER'"
-check "the installer waits for the new partitions before it formats them" bash -c "grep -q 'udevadm settle' '$INSTALLER' && grep -q 'format mkfs.fat' '$INSTALLER' && grep -q 'wipefs -a' '$INSTALLER'"
+check "the installer waits for the new partitions before it formats them" bash -c "grep -q 'udevadm settle' '$INSTALLER' && grep -q 'retry mkfs.fat' '$INSTALLER' && grep -q 'retry mount -t vfat' '$INSTALLER' && grep -q 'wipefs -a' '$INSTALLER'"
 section "unattended install"
 check "the installer reads answers from a SNAPOS_ANSWERS disk" bash -c "grep -q 'by-label/SNAPOS_ANSWERS' '$INSTALLER' && grep -q 'snapos-answers.env' '$INSTALLER'"
 check "every question has an answer key" bash -c "for k in LANG KEYMAP LOCALE TIMEZONE DISK USERNAME PASSWORD HOSTNAME DESKTOP LOOK GRAPHICS; do grep -q \"A_\$k\" '$INSTALLER' || exit 1; done"

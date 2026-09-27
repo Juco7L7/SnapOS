@@ -741,21 +741,25 @@ if [[ "$TARGET" =~ nvme|mmcblk ]]; then BOOTPART="${TARGET}p2"; ROOTPART="${TARG
 else BOOTPART="${TARGET}2"; ROOTPART="${TARGET}3"; fi
 
 say "$(t i_fmt)..."
-# what an earlier system left at the same place on the disk is wiped first
-wipefs -a "$BOOTPART" "$ROOTPART" >/dev/null 2>&1; settle
-format() { # command...: tried again while the partition is still busy
+# udev looks at every new partition and file system; while it does, the
+# device is busy. Each step waits for it and is tried again when refused.
+calm() { udevadm settle --timeout=30 2>/dev/null; sleep 1; }
+retry() {
     local i
-    for i in 1 2 3 4 5; do "$@" && return 0; settle; done
+    for i in 1 2 3 4 5 6; do "$@" && return 0; calm; sleep 2; done
     return 1
 }
-format mkfs.fat -F 32 -n BOOT "$BOOTPART" || die "$(t f_fmt "$BOOTPART")"
-format mkfs.ext4 -F -L nixos "$ROOTPART" || die "$(t f_fmt "$ROOTPART")"
-settle
+# what an earlier system left at the same place on the disk is wiped first
+wipefs -a "$BOOTPART" "$ROOTPART" >/dev/null 2>&1; calm
+retry mkfs.fat -F 32 -n BOOT "$BOOTPART" || die "$(t f_fmt "$BOOTPART")"
+calm
+retry mkfs.ext4 -F -L nixos "$ROOTPART" || die "$(t f_fmt "$ROOTPART")"
+calm
 
 say "$(t i_mount)..."
-mount "$ROOTPART" /mnt || die "$(t f_mount "$ROOTPART")"
+retry mount -t ext4 "$ROOTPART" /mnt || die "$(t f_mount "$ROOTPART")"
 mkdir -p /mnt/boot
-mount "$BOOTPART" /mnt/boot || die "$(t f_mount "$BOOTPART")"
+retry mount -t vfat "$BOOTPART" /mnt/boot || die "$(t f_mount "$BOOTPART")"
 
 say "$(t i_hw)..."
 nixos-generate-config --root /mnt || die "$(t f_hw)"
