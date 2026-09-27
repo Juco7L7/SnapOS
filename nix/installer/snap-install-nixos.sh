@@ -303,6 +303,20 @@ load_answers() {
     umount "$d" 2>/dev/null; rmdir "$d"
 }
 load_answers
+# The installer starts on every console that logs in (the screen, a serial
+# line). Without questions nothing holds the second one back, so only the
+# first installs; the others show what it is doing.
+if [ "$UNATTENDED" = 1 ]; then
+    INSTALL_LOG=/run/snapos-install.log
+    exec 9>>/run/snapos-install.lock
+    if ! flock -n 9; then
+        printf '\n  The installation is running on another console. Following it here.\n\n'
+        tail -n +1 -F "$INSTALL_LOG" 2>/dev/null
+        exit 0
+    fi
+    : > "$INSTALL_LOG"
+    exec > >(tee -a "$INSTALL_LOG") 2>&1
+fi
 caret() { printf '\n  %s›%s ' "$ACC" "$RST"; }
 
 die() {

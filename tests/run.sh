@@ -553,6 +553,7 @@ check "the installer waits for the new partitions before it formats them" bash -
 section "unattended install"
 check "the installer reads answers from a SNAPOS_ANSWERS disk" bash -c "grep -q 'by-label/SNAPOS_ANSWERS' '$INSTALLER' && grep -q 'snapos-answers.env' '$INSTALLER'"
 check "every question has an answer key" bash -c "for k in LANG KEYMAP LOCALE TIMEZONE DISK USERNAME PASSWORD HOSTNAME DESKTOP LOOK GRAPHICS; do grep -q \"A_\$k\" '$INSTALLER' || exit 1; done"
+check "only one console runs the unattended install" bash -c "grep -q 'flock -n 9' '$INSTALLER' && grep -q 'tail -n +1 -F' '$INSTALLER'"
 check "the unattended install confirms and restarts by itself" bash -c "grep -q 'CONFIRM=SAVE' '$INSTALLER' && grep -q 'SNAPOS-INSTALL-OK' '$INSTALLER'"
 check "an unattended install does not wait at the welcome screen" grep -q '\[ "\$UNATTENDED" = 1 \] || read -r _' "$INSTALLER"
 out="$(SNAPOS_FLAKE_ATTR= env PATH="$U/bin:$PATH" SNAPOS_NIX_DIR="$U/sys" SNAPOS_UPDATE_API="file://$U/api" SNAPOS_UPDATE_WEB="file://$U/web" SNAPOS_OS_RELEASE="$U/os-release" SNAPOS_STATE_DIR="$U/state" SNAPOS_PROFILE="$U/profile/system" SNAPOS_MIN_FREE_MB=1 SNAPOS_NO_REBOOT=1 "$BIN/snapos" update 2>&1)"
