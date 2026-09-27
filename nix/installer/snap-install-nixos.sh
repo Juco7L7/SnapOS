@@ -713,10 +713,25 @@ if [ "$UNATTENDED" = 1 ]; then CONFIRM=SAVE; printf 'SAVE\n'; else read -r CONFI
 step 11 s_install
 header
 say "$(t i_part "$TARGET")..."
-parted -s "$TARGET" -- mklabel gpt \
-    mkpart bios_boot 1MiB 2MiB set 1 bios_grub on \
-    mkpart ESP fat32 2MiB 514MiB set 2 esp on \
-    mkpart root ext4 514MiB 100% || die "$(t f_part)"
+# The whole table is written in one go (sfdisk): written partition by
+# partition, a slow machine is still looking at the first one when the next
+# is added, and the kernel refuses the change.
+partition() {
+    wipefs -a "$TARGET" >/dev/null 2>&1
+    if command -v sfdisk >/dev/null 2>&1; then
+        printf '%s\n' 'label: gpt' \
+            'start=1MiB, size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name=bios_boot' \
+            'size=512MiB, type=uefi, name=ESP' \
+            'type=linux, name=root' \
+            | sfdisk --quiet --wipe always --wipe-partitions always "$TARGET"
+    else
+        parted -s "$TARGET" -- mklabel gpt \
+            mkpart bios_boot 1MiB 2MiB set 1 bios_grub on \
+            mkpart ESP fat32 2MiB 514MiB set 2 esp on \
+            mkpart root ext4 514MiB 100%
+    fi
+}
+partition || { sleep 3; udevadm settle --timeout=30 2>/dev/null; partition; } || die "$(t f_part)"
 # the kernel and udev need a moment to see the new partitions; until they
 # are done the partitions are "busy"
 settle() { partprobe "$TARGET" 2>/dev/null; udevadm settle --timeout=30 2>/dev/null; sleep 2; }
