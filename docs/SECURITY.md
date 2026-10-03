@@ -44,16 +44,14 @@ before it is drafted or run. `snap-deb` does the same for `.deb` files.
 ## The Debian layer
 
 Programs from `.deb` files run inside a Debian layer (`/var/lib/snapdeb`,
-`src/snap-deb.c`) through bubblewrap: the layer's root is mounted read-only,
-`/tmp` and `/run` are private, the environment starts empty, and the program
-gets the user's home, display, sound and D-Bus sockets. This is a compatibility
-layer, not a sandbox: a program in the layer can read and write the user's
-files exactly like a native one. Installing a `.deb` runs its maintainer
-scripts as root inside the layer, as on Debian, which is why SnapGuard scans
-every `.deb` first; that root runs with only the capabilities dpkg needs (no
-`SYS_ADMIN`, no `MKNOD`) and in its own pid, ipc and uts namespaces, so an
-install script cannot mount, create device nodes or enter the host's
-namespaces. The layer itself is created with Debian's
+`src/snap-deb.c`) through bubblewrap, with the user's home, display, sound,
+devices and D-Bus sockets. The layer is a native layer, not a sandbox: a
+program in it can do what it could do on a Debian computer, and installing a
+`.deb` runs its maintainer scripts as root with every capability, as on
+Debian. A package that brings a system service is installed too; the service
+itself does not start inside the layer, and the user is told so. The one
+protection is SnapGuard, which scans every `.deb` before it is declared: a
+threat goes to quarantine and is never installed. The layer itself is created with Debian's
 `debootstrap` against Debian's archive keys, which SnapOS ships in
 `/etc/snapos/debian-archive-keyring.gpg` (from the `debian-archive-keyring`
 package; without it no layer is created), and packages are
@@ -109,10 +107,10 @@ root writes the markers; users only read them. Downloads go to
   including local privilege escalations, are unpatched in those releases.
   Fixed by V2.0, which moves to NixOS 26.05 (Linux 6.18) and updates itself.
 - **V1.1 Debian layer.** `snap-deb sync` ran a package's install scripts as
-  root with all capabilities and without a pid namespace, so a malicious
-  `.deb` could mount devices or enter the host's namespaces and leave the
-  layer. Fixed in V2.0: only the capabilities dpkg needs, own pid, ipc and uts
-  namespaces.
+  root with all capabilities and without a pid namespace. V2.0 limited them to
+  the capabilities dpkg needs. V2.5 went back to full powers on purpose: the
+  layer is a native layer, like a Debian computer, and SnapGuard's scan of
+  every `.deb` is the protection.
 - Found and fixed during the V2.0 review, never released: the updater wrote
   its downloads to `/tmp` under predictable names as root (a local user could
   plant a symbolic link there); file names reached desktop notifications as

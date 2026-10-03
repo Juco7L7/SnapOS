@@ -287,14 +287,16 @@ static const char *service_in(const char *deb) {
     return unit;
 }
 
-static int refuse_service(const DebInfo *d, const char *unit) {
+/* A service in the package does not stop the install: the program is usually
+ * usable without it. The user is told that the service itself will not run. */
+static int note_service(const DebInfo *d, const char *unit) {
     if (!unit[0]) return 0;
     fprintf(stderr,
-        "  %s✗ %s installs a system service (%s).%s\n"
-        "  Programs from .deb files run without services on SnapOS, so it would not work.\n"
-        "  Look for it in the SnapOS configuration instead: search.nixos.org, then\n"
-        "  add it with snapos config.\n", RED, d->pkg, unit, RST);
-    return 1;
+        "  %s! %s also brings a system service (%s).%s\n"
+        "  The program is installed; the service itself does not start inside the\n"
+        "  Debian layer. If the program needs it, look for the program with\n"
+        "  snapos find instead.\n", DIM, d->pkg, unit, RST);
+    return 0;
 }
 
 static int arch_ok(const DebInfo *d) {
@@ -539,15 +541,10 @@ static int in_layer_root(char *const cmd[]) {
     argv[k++] = "--tmpfs"; argv[k++] = "/run";
     argv[k++] = "--ro-bind-try"; argv[k++] = "/etc/resolv.conf"; argv[k++] = "/etc/resolv.conf";
     if (is_dir(debs)) { argv[k++] = "--ro-bind"; argv[k++] = debs; argv[k++] = DEBS_MOUNT; }
-    /* dpkg changes owners, modes and file capabilities, and apt drops to its
-     * own user: those powers are granted, and nothing else. No SYS_ADMIN and
-     * no MKNOD, so an install script cannot mount, make device nodes or enter
-     * the host's namespaces; its own pid, ipc and uts namespaces on top. */
-    static const char *caps[] = { "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER",
-                                  "CAP_FSETID", "CAP_SETUID", "CAP_SETGID", "CAP_SETFCAP",
-                                  "CAP_SYS_CHROOT", "CAP_KILL", NULL };
-    for (int i = 0; caps[i]; i++) { argv[k++] = "--cap-add"; argv[k++] = (char *)caps[i]; }
-    argv[k++] = "--unshare-pid"; argv[k++] = "--unshare-ipc"; argv[k++] = "--unshare-uts";
+    /* The layer is a native layer, not a sandbox: install scripts run as root
+     * with every power, as they would on a Debian computer. What protects the
+     * system is SnapGuard, which scans every .deb before it gets here. */
+    argv[k++] = "--cap-add"; argv[k++] = "ALL";
     argv[k++] = "--clearenv";
     argv[k++] = "--setenv"; argv[k++] = "PATH"; argv[k++] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
     argv[k++] = "--setenv"; argv[k++] = "HOME"; argv[k++] = "/root";
@@ -791,7 +788,7 @@ static int cmd_sync(void) {
         pathf(path, sizeof path, "%s/%s", dir, names[i]);
         DebInfo d;
         if (!read_info(path, &d)) { fprintf(stderr, "snap-deb: skipping %s: not a .deb\n", names[i]); continue; }
-        if (refuse_service(&d, service_in(path))) {
+        if (note_service(&d, service_in(path))) {
             fprintf(stderr, "  Remove it with: snap-deb remove %s\n", d.pkg);
             rc_skip = 1;
             continue;
@@ -885,7 +882,7 @@ static int cmd_run(int argc, char **argv) {
     rootfs(r, sizeof r);
     const char *home = getenv("HOME");
     if (!home || !*home || home[0] != '/') home = "/tmp";
-    /* The layer's root is read-only, so the home's parent becomes a tmpfs
+    /* The home folder does not exist in the layer, so its parent becomes a tmpfs
      * where the mount point can be made. */
     snprintf(parent, sizeof parent, "%s", home);
     char *slash = strrchr(parent, '/');
@@ -899,10 +896,10 @@ static int cmd_run(int argc, char **argv) {
     char *a[160];
     int k = 0;
     a[k++] = (char *)bwrap();
-    a[k++] = "--ro-bind"; a[k++] = r; a[k++] = "/";
+    a[k++] = "--bind"; a[k++] = r; a[k++] = "/";
     a[k++] = "--dev-bind"; a[k++] = "/dev"; a[k++] = "/dev";
     a[k++] = "--proc"; a[k++] = "/proc";
-    a[k++] = "--ro-bind"; a[k++] = "/sys"; a[k++] = "/sys";
+    a[k++] = "--bind"; a[k++] = "/sys"; a[k++] = "/sys";
     a[k++] = "--perms"; a[k++] = "1777"; a[k++] = "--tmpfs"; a[k++] = "/tmp";
     a[k++] = "--ro-bind-try"; a[k++] = "/tmp/.X11-unix"; a[k++] = "/tmp/.X11-unix";
     a[k++] = "--tmpfs"; a[k++] = "/run";
@@ -1065,7 +1062,7 @@ static int cmd_add(const char *deb, int force) {
         fprintf(stderr, "snap-deb: this package is for %s, not for this computer (%s)\n", d.arch, host_arch());
         return 2;
     }
-    if (refuse_service(&d, service_in(deb))) return 2;
+    if (note_service(&d, service_in(deb))) return 2;
     int s = scan(deb);
     if (s == 1) return 1;
     if (s == 2 && !force) {
@@ -1098,7 +1095,7 @@ static int interactive(const char *deb) {
         wait_enter();
         return 2;
     }
-    if (refuse_service(&d, service_in(deb))) { wait_enter(); return 2; }
+    if (note_service(&d, service_in(deb))) { wait_enter(); return 2; }
     int s = scan(deb);
     if (s == 1) { wait_enter(); return 1; }
     if (s == 2 && !ask("Continue without a scan?")) { wait_enter(); return 2; }

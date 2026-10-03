@@ -482,15 +482,17 @@ snap-deb status                 # the layer: Debian version, packages, tools
 </details>
 
 <details>
-<summary><b>What the layer does not do</b></summary>
+<summary><b>What the layer is and is not</b></summary>
 
 <br>
 
-- **It runs programs, not services.** A `.deb` that installs a system service
-  (a VPN, Docker, a driver) is refused with a message, because it would
-  install but never work. Look for that software with `snapos find` instead.
-- **It is not a sandbox.** A program in it reads and writes your files like a
-  native one, which is why SnapGuard scans every `.deb` first.
+- **It runs programs, not services.** A `.deb` that also brings a system
+  service (a VPN, Docker, a driver) is installed, but its service does not
+  start inside the layer; SnapOS tells you so. For those, `snapos find` usually
+  has the native version.
+- **It is not a sandbox.** The layer is native: a program in it can do what it
+  could do on Debian. The protection is SnapGuard, which scans every `.deb`
+  before it is installed.
 - On an ARM64 computer the layer takes `arm64` packages. On a PC it takes
   64-bit and 32-bit packages, so programs like **Steam** work: its libraries
   are installed together with it.

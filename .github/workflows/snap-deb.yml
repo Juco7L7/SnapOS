@@ -71,7 +71,7 @@ jobs:
           echo "$out"
           test "$out" = "hello from the layer"
           bin/snap-deb run cat /etc/os-release | grep -q 'ID=debian'
-          # The user's home is the real one, and the layer's root is read-only.
+          # The user's home is the real one; the layer's system files belong to root, as on Debian.
           echo marker > "$HOME/snapdeb-marker"
           test "$(bin/snap-deb run cat "$HOME/snapdeb-marker")" = marker
           ! bin/snap-deb run touch /usr/bin/nope

@@ -264,9 +264,9 @@ GUARD
     printf '#!/bin/sh\n' > "$TMP/deb/svc/usr/bin/vpn-thing"
     dpkg-deb --build "$TMP/deb/svc" "$TMP/deb/vpn-thing_1.0_amd64.deb" >/dev/null 2>&1
     out="$(sd add "$TMP/deb/vpn-thing_1.0_amd64.deb" 2>&1)"; rc=$?
-    check_eq "a package with a system service is refused" "2" "$rc"
-    check "and the refusal names the service and the way out" bash -c "printf '%s' \"\$1\" | grep -q 'vpn-thing.service' && printf '%s' \"\$1\" | grep -q 'search.nixos.org'" _ "$out"
-    check "and it is not declared" bash -c "! ls '$SNAPOS_NIX_DIR/debs' | grep -q vpn-thing"
+    check_eq "a package with a system service is accepted" "0" "$rc"
+    check "and the user is told that the service itself does not start" bash -c "printf '%s' \"\$1\" | grep -q 'vpn-thing.service' && printf '%s' \"\$1\" | grep -q 'does not start'" _ "$out"
+    check "and it is declared" bash -c "ls '$SNAPOS_NIX_DIR/debs' | grep -q vpn-thing"
     unset SNAPOS_NIX_DIR
 fi
 check "the .deb opener is the default for .deb files" grep -q 'application/vnd.debian.binary-package' "$ROOT/branding/snap-deb.desktop"
@@ -302,7 +302,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$FAKE_OUT"\n' > "$TMP/fakebwrap"
 chmod +x "$TMP/fakebwrap"
 mkdir -p "$TMP/home"
 FAKE_OUT="$TMP/bwrap-args" SNAPDEB_BWRAP="$TMP/fakebwrap" HOME="$TMP/home" "$D" run hello-snap --flag
-check "run mounts the layer as the root" bash -c "grep -A2 -x -- '--ro-bind' '$TMP/bwrap-args' | grep -A1 -x '$R' | grep -qx '/'"
+check "run mounts the layer as the root" bash -c "grep -A2 -x -- '--bind' '$TMP/bwrap-args' | grep -A1 -x '$R' | grep -qx '/'"
 check "run keeps the home folder" bash -c "grep -A2 -x -- '--bind' '$TMP/bwrap-args' | grep -qx '$TMP/home'"
 check "run starts from a clean environment" grep -qx -- '--clearenv' "$TMP/bwrap-args"
 check_eq "run passes the command and its arguments" "hello-snap --flag" "$(tail -2 "$TMP/bwrap-args" | tr '\n' ' ' | sed 's/ $//')"
@@ -316,7 +316,8 @@ check "the module exports the layer to the menu" grep -q 'debLayer}/exports/shar
 check "the module ships bubblewrap and debootstrap" bash -c "grep -q 'pkgs.bubblewrap' '$ROOT/nix/modules/snapos.nix' && grep -q 'pkgs.debootstrap' '$ROOT/nix/modules/snapos.nix'"
 check "the Debian archive keyring is shipped" bash -c "[ -s '$ROOT/security/debian-archive-keyring.gpg' ] && grep -q 'debian-archive-keyring.gpg' '$ROOT/nix/modules/snapos.nix'"
 check "the layer is created only from a verified archive" grep -q -- '--keyring=' "$ROOT/src/snap-deb.c"
-check "apt in the layer runs without SYS_ADMIN or MKNOD and in its own pid namespace" bash -c "! grep -q '\"ALL\"' '$ROOT/src/snap-deb.c' && grep -q 'CAP_SYS_CHROOT' '$ROOT/src/snap-deb.c' && ! grep -q 'CAP_SYS_ADMIN' '$ROOT/src/snap-deb.c' && grep -q -- '--unshare-pid' '$ROOT/src/snap-deb.c'"
+check "the layer is native: install scripts run with every power, as on Debian" bash -c "grep -q '\"--cap-add\"; argv\[k++\] = \"ALL\"' '$ROOT/src/snap-deb.c' && ! grep -q -- '--unshare-pid' '$ROOT/src/snap-deb.c'"
+check "every .deb is scanned by SnapGuard before it reaches the layer" bash -c "grep -q 'snapguard' '$ROOT/src/snap-deb.c'"
 check "the layer of a PC takes 32-bit packages too" bash -c "grep -q 'amd64.ni386' '$ROOT/src/snap-deb.c'"
 check "Steam gets its libraries when it is installed" bash -c "grep -q 'steam-libs-i386:i386' '$ROOT/src/snap-deb.c' && grep -q 'libgl1-mesa-dri:i386' '$ROOT/src/snap-deb.c'"
 check "install scripts that call systemctl do not fail" bash -c "grep -q '\"systemctl\", \"service\"' '$ROOT/src/snap-deb.c' && grep -q 'policy-rc.d' '$ROOT/src/snap-deb.c'"
